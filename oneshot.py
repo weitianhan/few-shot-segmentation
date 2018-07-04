@@ -1,18 +1,9 @@
-#-------------------------------------
-# Project: Learning to Compare: Relation Network for Few-Shot Learning
-# Date: 2017.9.21
-# Author: Flood Sung
-# All Rights Reserved
-#-------------------------------------
-
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import StepLR
 import numpy as np
-# import task_generator as tg
 import os
 import math
 import argparse
@@ -22,7 +13,7 @@ import cv2
 parser = argparse.ArgumentParser(description="One Shot Visual Recognition")
 parser.add_argument("-f","--feature_dim",type = int, default = 64)
 parser.add_argument("-r","--relation_dim",type = int, default = 8)
-parser.add_argument("-w","--class_num",type = int, default = 5)
+parser.add_argument("-w","--class_num",type = int, default = 1)
 parser.add_argument("-s","--sample_num_per_class",type = int, default = 1)
 parser.add_argument("-b","--batch_num_per_class",type = int, default = 9)
 parser.add_argument("-e","--episode",type = int, default= 50000)
@@ -30,6 +21,7 @@ parser.add_argument("-t","--test_episode", type = int, default = 1000)
 parser.add_argument("-l","--learning_rate", type = float, default = 0.001)
 parser.add_argument("-g","--gpu",type=int, default=0)
 parser.add_argument("-u","--hidden_unit",type=int,default=10)
+parser.add_argument("-d","--display_query_num",type=int,default=5)
 args = parser.parse_args()
 
 
@@ -44,6 +36,7 @@ TEST_EPISODE = args.test_episode
 LEARNING_RATE = args.learning_rate
 GPU = args.gpu
 HIDDEN_UNIT = args.hidden_unit
+DISPLAY_QUERY = args.display_query_num
 
 class CNNEncoder(nn.Module):
     """docstring for ClassName"""
@@ -118,18 +111,18 @@ def weights_init(m):
         m.weight.data.normal_(0, 0.01)
         m.bias.data = torch.ones(m.bias.data.size())
 
-def get_oneshot_batch():  #may need shuffle in query_images
+def get_oneshot_batch():  #shuffle in query_images not done
     classes = list(range(1,21))
-    chosen_classes = random.sample(classes,5)
-    support_images = np.zeros((5,3,224,224), dtype=np.float32)
-    support_labels = np.zeros((5,5,224,224), dtype=np.float32)
-    query_images = np.zeros((5*9,3,224,224), dtype=np.float32)
-    query_labels = np.zeros((5*9,5,224,224), dtype=np.float32)
+    chosen_classes = random.sample(classes, CLASS_NUM)
+    support_images = np.zeros((CLASS_NUM,3,224,224), dtype=np.float32)
+    support_labels = np.zeros((CLASS_NUM,CLASS_NUM,224,224), dtype=np.float32)
+    query_images = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,3,224,224), dtype=np.float32)
+    query_labels = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,CLASS_NUM,224,224), dtype=np.float32)
     class_cnt = 0
     for i in chosen_classes:
         imgnames = os.listdir('./fewshot/label/%s' % i)
         indexs = list(range(0,len(imgnames)))
-        chosen_index = random.sample(indexs, 10)
+        chosen_index = random.sample(indexs, SAMPLE_NUM_PER_CLASS + BATCH_NUM_PER_CLASS)
         j = 0
         for k in chosen_index:
             # process image
@@ -143,8 +136,8 @@ def get_oneshot_batch():  #may need shuffle in query_images
                 support_images[class_cnt] = image
                 support_labels[class_cnt][class_cnt] = label
             else:
-                query_images[class_cnt*9+j-1] = image
-                query_labels[class_cnt*9+j-1][class_cnt] = label
+                query_images[class_cnt*BATCH_NUM_PER_CLASS+j-1] = image
+                query_labels[class_cnt*BATCH_NUM_PER_CLASS+j-1][class_cnt] = label
             j += 1
 
         class_cnt += 1
@@ -292,7 +285,7 @@ def main():
 
 
         relation_pairs = torch.cat((sample_features_ext,batch_features_ext),2).view(-1,FEATURE_DIM*2,56,56)
-        output = relation_network(relation_pairs).view(-1,5,224,224)
+        output = relation_network(relation_pairs).view(-1,CLASS_NUM,224,224)
         # print (output.size())
         # stop
         # print (relation_pairs.size(), relations.size())
@@ -319,11 +312,17 @@ def main():
         if (episode+1)%10 == 0:
                 print("episode:",episode+1,"loss",loss.cpu().data.numpy())
 
+        if not os.path.exists('result'):
+            os.makedirs('result')
+
+        # training result visualization
         if (episode+1)%500 == 0:
-            support_output = np.zeros((224*2, 224*5, 3), dtype=np.uint8)
-            query_output = np.zeros((224*3, 224*5, 3), dtype=np.uint8)
-            extra = np.zeros((224*3, 224*5, 3), dtype=np.uint8)
-            for i in range(5):
+            support_output = np.zeros((224*2, 224*CLASS_NUM, 3), dtype=np.uint8)
+            query_output = np.zeros((224*3, 224*DISPLAY_QUERY, 3), dtype=np.uint8)
+            extra = np.zeros((224*3, 224*CLASS_NUM, 3), dtype=np.uint8)
+            chosen_query = random.sample(list(range(0,BATCH_NUM_PER_CLASS)), DISPLAY_QUERY)
+
+            for i in range(CLASS_NUM):
                 supp_img = (np.transpose(samples.numpy()[i],(1,2,0))*255).astype(np.uint8)[:,:,::-1]
                 support_output[0:224,i*224:(i+1)*224,:] = supp_img
                 supp_label = sample_labels.numpy()[i][i]
@@ -331,29 +330,31 @@ def main():
                 supp_label = decode_segmap(supp_label)
                 support_output[224:224*2, i*224:(i+1)*224,:] = supp_label
 
-                query_img = (np.transpose(batches.numpy()[i*9],(1,2,0))*255).astype(np.uint8)[:,:,::-1]
-                query_output[0:224,i*224:(i+1)*224,:] = query_img
-                query_label = batch_labels.numpy()[i*9][i]
-                query_label[query_label!=0] = chosen_classes[i]
-                query_label = decode_segmap(query_label)
-                query_output[224:224*2, i*224:(i+1)*224,:] = query_label
+                for cnt, x in enumerate(chosen_query):
+                    query_img = (np.transpose(batches.numpy()[x],(1,2,0))*255).astype(np.uint8)[:,:,::-1]
+                    query_output[0:224,cnt*224:(cnt+1)*224,:] = query_img
+                    query_label = batch_labels.numpy()[x][0] #only apply to one-way setting
+                    query_label[query_label!=0] = chosen_classes[i]
+                    query_label = decode_segmap(query_label)
+                    query_output[224:224*2, cnt*224:(cnt+1)*224,:] = query_label
 
-                query_pred = output.detach().cpu().numpy()[i*9][i]
-                query_pred = (query_pred*255).astype(np.uint8)
-                result = np.zeros((224,224,3), dtype=np.uint8)
-                result[:,:,0] = query_pred
-                result[:,:,1] = query_pred
-                result[:,:,2] = query_pred
-                query_output[224*2:224*3, i*224:(i+1)*224,:] = result
+                    query_pred = output.detach().cpu().numpy()[x][0]
+                    query_pred = (query_pred*255).astype(np.uint8)
+                    result = np.zeros((224,224,3), dtype=np.uint8)
+                    result[:,:,0] = query_pred
+                    result[:,:,1] = query_pred
+                    result[:,:,2] = query_pred
+                    query_output[224*2:224*3, cnt*224:(cnt+1)*224,:] = result
             extra = query_output.copy()
-            for i in range(5):
-                extra_label = batch_labels.numpy()[i*9][i]
-                extra_label[extra_label!=0] = 255
-                result1 = np.zeros((224,224,3), dtype=np.uint8)
-                result1[:,:,0] = extra_label
-                result1[:,:,1] = extra_label
-                result1[:,:,2] = extra_label
-                extra[224*2:224*3, i*224:(i+1)*224,:] = result1
+            for i in range(CLASS_NUM):
+                for cnt, x in enumerate(chosen_query):
+                    extra_label = batch_labels.numpy()[x][0]
+                    extra_label[extra_label!=0] = 255
+                    result1 = np.zeros((224,224,3), dtype=np.uint8)
+                    result1[:,:,0] = extra_label
+                    result1[:,:,1] = extra_label
+                    result1[:,:,2] = extra_label
+                    extra[224*2:224*3, cnt*224:(cnt+1)*224,:] = result1
             cv2.imwrite('result/%s_query.png' % episode, query_output)
             cv2.imwrite('result/%s_show.png' % episode, extra)
             cv2.imwrite('result/%s_support.png' % episode, support_output)
