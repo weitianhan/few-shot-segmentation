@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import StepLR
+import torchvision.models as models
 import numpy as np
 import os
 import math
@@ -16,7 +17,7 @@ parser.add_argument("-r","--relation_dim",type = int, default = 8)
 parser.add_argument("-w","--class_num",type = int, default = 1)
 parser.add_argument("-s","--sample_num_per_class",type = int, default = 1)
 parser.add_argument("-b","--batch_num_per_class",type = int, default = 9)
-parser.add_argument("-e","--episode",type = int, default= 50000)
+parser.add_argument("-e","--episode",type = int, default= 500000)
 parser.add_argument("-t","--test_episode", type = int, default = 1000)
 parser.add_argument("-l","--learning_rate", type = float, default = 0.001)
 parser.add_argument("-g","--gpu",type=int, default=0)
@@ -74,19 +75,19 @@ class RelationNetwork(nn.Module):
     def __init__(self,input_size,hidden_size):
         super(RelationNetwork, self).__init__()
         self.layer1 = nn.Sequential(
-                        nn.Conv2d(128,64,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(64, momentum=1, affine=True),
-                        nn.ReLU(),
-                        nn.MaxPool2d(2))
-        self.layer2 = nn.Sequential(
-                        nn.Conv2d(64,64,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(64, momentum=1, affine=True),
-                        nn.ReLU(),
-                        nn.MaxPool2d(2))
-        self.fc1 = nn.Sequential(
-                        nn.Conv2d(64,1,kernel_size=1,padding=0)
+                        nn.Conv2d(1024,256,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(256, momentum=1, affine=True),
+                        nn.ReLU()
                         )
-        self.upsample16 = nn.Upsample(scale_factor=16, mode='bilinear')
+        self.layer2 = nn.Sequential(
+                        nn.Conv2d(256,128,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(128, momentum=1, affine=True),
+                        nn.ReLU()
+                        )
+        self.fc1 = nn.Sequential(
+                        nn.Conv2d(128,1,kernel_size=1,padding=0)
+                        )
+        self.upsample16 = nn.Upsample(scale_factor=32, mode='bilinear')
 
     def forward(self,x):
         out = self.layer1(x)
@@ -222,19 +223,21 @@ def main():
     # Step 2: init neural networks
     print("init neural networks")
 
-    feature_encoder = CNNEncoder()
+    #read pre-trained network here
+    vgg16 = models.vgg16_bn(pretrained=True)
+    feature_encoder = nn.Sequential(*list(vgg16.children())[0])
     relation_network = RelationNetwork(FEATURE_DIM,RELATION_DIM)
 
-    feature_encoder.apply(weights_init)
+    # feature_encoder.apply(weights_init)
     relation_network.apply(weights_init)
 
     feature_encoder.cuda(GPU)
     relation_network.cuda(GPU)
 
     feature_encoder_optim = torch.optim.Adam(feature_encoder.parameters(),lr=LEARNING_RATE)
-    feature_encoder_scheduler = StepLR(feature_encoder_optim,step_size=10000,gamma=0.5)
+    feature_encoder_scheduler = StepLR(feature_encoder_optim,step_size=EPISODE//10,gamma=0.5)
     relation_network_optim = torch.optim.Adam(relation_network.parameters(),lr=LEARNING_RATE)
-    relation_network_scheduler = StepLR(relation_network_optim,step_size=10000,gamma=0.5)
+    relation_network_scheduler = StepLR(relation_network_optim,step_size=EPISODE//10,gamma=0.5)
 
     if os.path.exists(str("./models/omniglot_feature_encoder_" + str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl")):
         feature_encoder.load_state_dict(torch.load(str("./models/omniglot_feature_encoder_" + str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl")))
@@ -277,18 +280,19 @@ def main():
 
         # calculate relations
         # each batch sample link to every samples to calculate relations
-        # to form a 100x128 matrix for relation network
+        # to form a matrix for relation network
         sample_features_ext = sample_features.unsqueeze(0).repeat(BATCH_NUM_PER_CLASS*CLASS_NUM,1,1,1,1)
         batch_features_ext = batch_features.unsqueeze(0).repeat(SAMPLE_NUM_PER_CLASS*CLASS_NUM,1,1,1,1)
         batch_features_ext = torch.transpose(batch_features_ext,0,1)
         # print (sample_features_ext.size(), batch_features_ext.size())
 
 
-        relation_pairs = torch.cat((sample_features_ext,batch_features_ext),2).view(-1,FEATURE_DIM*2,56,56)
+
+        relation_pairs = torch.cat((sample_features_ext,batch_features_ext),2).view(-1,1024,7,7)
         output = relation_network(relation_pairs).view(-1,CLASS_NUM,224,224)
         # print (output.size())
         # stop
-        # print (relation_pairs.size(), relations.size())
+        # print (relation_pairs.size())
         # stop
 
         mse = nn.MSELoss().cuda(GPU)
@@ -316,7 +320,7 @@ def main():
             os.makedirs('result')
 
         # training result visualization
-        if (episode+1)%500 == 0:
+        if (episode+1)%1000 == 0:
             support_output = np.zeros((224*2, 224*CLASS_NUM, 3), dtype=np.uint8)
             query_output = np.zeros((224*3, 224*DISPLAY_QUERY, 3), dtype=np.uint8)
             extra = np.zeros((224*3, 224*CLASS_NUM, 3), dtype=np.uint8)
@@ -358,13 +362,12 @@ def main():
             cv2.imwrite('result/%s_query.png' % episode, query_output)
             cv2.imwrite('result/%s_show.png' % episode, extra)
             cv2.imwrite('result/%s_support.png' % episode, support_output)
-            
+
         #save models
         if (episode+1) % 100000 == 0:
-            torch.save(feature_encoder.state_dict(),str("./models/feature_encoder_" + str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
-            torch.save(relation_network.state_dict(),str("./models/relation_network_"+ str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
+            torch.save(feature_encoder.state_dict(),str("./models/feature_encoder_" + str(episode) + '_' + str(CLASS_NUM) +"_way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
+            torch.save(relation_network.state_dict(),str("./models/relation_network_"+ str(episode) + '_' + str(CLASS_NUM) +"_way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
             print("save networks for episode:",episode)
-
 
         # if (episode+1)%5000 == 0:
         #
