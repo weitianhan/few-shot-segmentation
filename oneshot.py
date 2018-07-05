@@ -358,6 +358,12 @@ def main():
             cv2.imwrite('result/%s_query.png' % episode, query_output)
             cv2.imwrite('result/%s_show.png' % episode, extra)
             cv2.imwrite('result/%s_support.png' % episode, support_output)
+            
+        #save models
+        if (episode+1) % 100000 == 0:
+            torch.save(feature_encoder.state_dict(),str("./models/feature_encoder_" + str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
+            torch.save(relation_network.state_dict(),str("./models/relation_network_"+ str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
+            print("save networks for episode:",episode)
 
 
         # if (episode+1)%5000 == 0:
