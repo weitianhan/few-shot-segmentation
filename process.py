@@ -98,4 +98,6 @@ for name in imgnames:
     jpegname = name.replace('.png', '.jpg')
     rgb = cv2.imread('./data/VOC2012/JPEGImages/%s' % jpegname)
     rgb = cv2.resize(rgb, (224,224))
+    if rgb is None:
+        print ('wrong here, stop')
     cv2.imwrite('./fewshot/image/%s' % jpegname, rgb)

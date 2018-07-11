@@ -23,6 +23,8 @@ parser.add_argument("-l","--learning_rate", type = float, default = 0.001)
 parser.add_argument("-g","--gpu",type=int, default=0)
 parser.add_argument("-u","--hidden_unit",type=int,default=10)
 parser.add_argument("-d","--display_query_num",type=int,default=5)
+parser.add_argument("-ex","--exclude_class",type=int,default=6)
+
 args = parser.parse_args()
 
 
@@ -38,6 +40,7 @@ LEARNING_RATE = args.learning_rate
 GPU = args.gpu
 HIDDEN_UNIT = args.hidden_unit
 DISPLAY_QUERY = args.display_query_num
+EXCLUDE_CLASS = args.exclude_class
 
 class CNNEncoder(nn.Module):
     """docstring for ClassName"""
@@ -114,6 +117,7 @@ def weights_init(m):
 
 def get_oneshot_batch():  #shuffle in query_images not done
     classes = list(range(1,21))
+    classes.remove(EXCLUDE_CLASS)
     chosen_classes = random.sample(classes, CLASS_NUM)
     support_images = np.zeros((CLASS_NUM,3,224,224), dtype=np.float32)
     support_labels = np.zeros((CLASS_NUM,CLASS_NUM,224,224), dtype=np.float32)
@@ -128,6 +132,8 @@ def get_oneshot_batch():  #shuffle in query_images not done
         for k in chosen_index:
             # process image
             image = cv2.imread('./fewshot/image/%s' % imgnames[k].replace('.png', '.jpg'))
+            if image is None:
+                print ('./fewshot/image/%s' % imgnames[k].replace('.png', '.jpg'))
             image = image[:,:,::-1] # bgr to rgb
             image = image / 255.0
             image = np.transpose(image, (2,0,1))
@@ -239,12 +245,12 @@ def main():
     relation_network_optim = torch.optim.Adam(relation_network.parameters(),lr=LEARNING_RATE)
     relation_network_scheduler = StepLR(relation_network_optim,step_size=EPISODE//10,gamma=0.5)
 
-    if os.path.exists(str("./models/omniglot_feature_encoder_" + str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl")):
-        feature_encoder.load_state_dict(torch.load(str("./models/omniglot_feature_encoder_" + str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl")))
-        print("load feature encoder success")
-    if os.path.exists(str("./models/omniglot_relation_network_"+ str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl")):
-        relation_network.load_state_dict(torch.load(str("./models/omniglot_relation_network_"+ str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl")))
-        print("load relation network success")
+    # if os.path.exists(str("./models/feature_encoder_99999_1_way_1shot.pkl")):
+    #     feature_encoder.load_state_dict(torch.load(str("./models/feature_encoder_99999_1_way_1shot.pkl")))
+    #     print("load feature encoder success")
+    # if os.path.exists(str("./models/relation_network_99999_1_way_1shot.pkl")):
+    #     relation_network.load_state_dict(torch.load(str("./models/relation_network_99999_1_way_1shot.pkl")))
+    #     print("load relation network success")
 
     # Step 3: build graph
     print("Training...")
