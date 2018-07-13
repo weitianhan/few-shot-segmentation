@@ -46,57 +46,100 @@ class CNNEncoder(nn.Module):
     """docstring for ClassName"""
     def __init__(self):
         super(CNNEncoder, self).__init__()
-        self.layer1 = nn.Sequential(
-                        nn.Conv2d(3,64,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(64, momentum=1, affine=True),
-                        nn.ReLU(),
-                        nn.MaxPool2d(2))
-        self.layer2 = nn.Sequential(
-                        nn.Conv2d(64,64,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(64, momentum=1, affine=True),
-                        nn.ReLU(),
-                        nn.MaxPool2d(2))
-        self.layer3 = nn.Sequential(
-                        nn.Conv2d(64,64,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(64, momentum=1, affine=True),
-                        nn.ReLU())
-        self.layer4 = nn.Sequential(
-                        nn.Conv2d(64,64,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(64, momentum=1, affine=True),
-                        nn.ReLU())
+        features = list(models.vgg16_bn(pretrained=True).features)
+        self.features = nn.ModuleList(features)#.eval()
+        # print (self.features)
+        # stop
+        # print (nn.Sequential(*list(models.vgg16_bn(pretrained=True).children())[0]))
+        # self.features = nn.ModuleList(features).eval()
 
     def forward(self,x):
-        out = self.layer1(x)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
-        #out = out.view(out.size(0),-1)
-        return out # 64
+        results = []
+        for ii, model in enumerate(self.features):
+            x = model(x)
+            if ii in {5, 12, 22, 32, 42}:
+                results.append(x)
+
+        return x, results
 
 class RelationNetwork(nn.Module):
     """docstring for RelationNetwork"""
-    def __init__(self,input_size,hidden_size):
+    def __init__(self):
         super(RelationNetwork, self).__init__()
         self.layer1 = nn.Sequential(
-                        nn.Conv2d(1024,256,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(256, momentum=1, affine=True),
+                        nn.Conv2d(1024,512,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(512, momentum=1, affine=True),
                         nn.ReLU()
                         )
         self.layer2 = nn.Sequential(
-                        nn.Conv2d(256,128,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(128, momentum=1, affine=True),
+                        nn.Conv2d(512,512,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(512, momentum=1, affine=True),
                         nn.ReLU()
                         )
-        self.fc1 = nn.Sequential(
-                        nn.Conv2d(128,1,kernel_size=1,padding=0)
-                        )
-        self.upsample16 = nn.Upsample(scale_factor=32, mode='bilinear')
+        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.double_conv1 = nn.Sequential(
+                        nn.Conv2d(1024,512,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(512, momentum=1, affine=True),
+                        nn.ReLU(),
+                        nn.Conv2d(512,512,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(512, momentum=1, affine=True),
+                        nn.ReLU()
+                        ) # 14 x 14
+        self.double_conv2 = nn.Sequential(
+                        nn.Conv2d(1024,256,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(256, momentum=1, affine=True),
+                        nn.ReLU(),
+                        nn.Conv2d(256,256,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(256, momentum=1, affine=True),
+                        nn.ReLU()
+                        ) # 28 x 28
+        self.double_conv3 = nn.Sequential(
+                        nn.Conv2d(512,128,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(128, momentum=1, affine=True),
+                        nn.ReLU(),
+                        nn.Conv2d(128,128,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(128, momentum=1, affine=True),
+                        nn.ReLU()
+                        ) # 56 x 56
+        self.double_conv4 = nn.Sequential(
+                        nn.Conv2d(256,64,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(64, momentum=1, affine=True),
+                        nn.ReLU(),
+                        nn.Conv2d(64,64,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(64, momentum=1, affine=True),
+                        nn.ReLU()
+                        ) # 112 x 112
+        self.double_conv5 = nn.Sequential(
+                        nn.Conv2d(128,64,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(64, momentum=1, affine=True),
+                        nn.ReLU(),
+                        nn.Conv2d(64,1,kernel_size=1,padding=0),
+                        ) # 256 x 256
 
-    def forward(self,x):
+        # self.fc1 = nn.Sequential(
+        #                 nn.Conv2d(128,1,kernel_size=1,padding=0)
+        #                 )
+        # self.upsample16 = nn.Upsample(scale_factor=32, mode='bilinear')
+
+    def forward(self,x,concat_features):
         out = self.layer1(x)
         out = self.layer2(out)
-        out = self.fc1(out)
-        out = self.upsample16(out)
+        out = self.upsample(out) #block 1
+        out = torch.cat((out, concat_features[-1]), dim=1)
+        out = self.double_conv1(out)
+        out = self.upsample(out) #block 2
+        out = torch.cat((out, concat_features[-2]), dim=1)
+        out = self.double_conv2(out)
+        out = self.upsample(out) #block 3
+        out = torch.cat((out, concat_features[-3]), dim=1)
+        out = self.double_conv3(out)
+        out = self.upsample(out) #block 4
+        out = torch.cat((out, concat_features[-4]), dim=1)
+        out = self.double_conv4(out)
+        out = self.upsample(out) #block 5
+        out = torch.cat((out, concat_features[-5]), dim=1)
+        out = self.double_conv5(out)
+
         out = F.sigmoid(out)
         return out
 
@@ -230,11 +273,10 @@ def main():
     print("init neural networks")
 
     #read pre-trained network here
-    vgg16 = models.vgg16_bn(pretrained=True)
-    feature_encoder = nn.Sequential(*list(vgg16.children())[0])
-    relation_network = RelationNetwork(FEATURE_DIM,RELATION_DIM)
+    # vgg16 = models.vgg16_bn(pretrained=True)
+    feature_encoder = CNNEncoder()
+    relation_network = RelationNetwork()
 
-    # feature_encoder.apply(weights_init)
     relation_network.apply(weights_init)
 
     feature_encoder.cuda(GPU)
@@ -280,10 +322,10 @@ def main():
         # stop
 
         # calculate features
-        sample_features = feature_encoder(Variable(samples).cuda(GPU))
+        sample_features, _ = feature_encoder(Variable(samples).cuda(GPU))
         sample_features = sample_features.view(CLASS_NUM,SAMPLE_NUM_PER_CLASS,512,7,7)
         sample_features = torch.sum(sample_features,1).squeeze(1) # 1*512*7*7
-        batch_features = feature_encoder(Variable(batches).cuda(GPU))
+        batch_features, ft_list = feature_encoder(Variable(batches).cuda(GPU))
         # print (sample_features.size(), batch_features.size())
 
         # calculate relations
@@ -297,7 +339,7 @@ def main():
 
 
         relation_pairs = torch.cat((sample_features_ext,batch_features_ext),2).view(-1,1024,7,7)
-        output = relation_network(relation_pairs).view(-1,CLASS_NUM,224,224)
+        output = relation_network(relation_pairs,ft_list).view(-1,CLASS_NUM,224,224)
         # print (output.size())
         # stop
         # print (relation_pairs.size())

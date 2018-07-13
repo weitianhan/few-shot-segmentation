@@ -1,10 +1,11 @@
 Training:
 python oneshot.py
+python kshot.py
 
 Testing:
 python test_oneshot.py
 
 Logs:
-Add k-shot training codes.
+Change upsampling in kshot.py to coarse-to-fine upsampling.
 
-feature extractor is now VGG16_bn, last feature maps 7*7 and upsample by 32x.
+feature extractor is now VGG16_bn, last feature maps 7*7 and upsample by 2x gradually.
