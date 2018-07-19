@@ -46,30 +46,15 @@ class CNNEncoder(nn.Module):
     """docstring for ClassName"""
     def __init__(self):
         super(CNNEncoder, self).__init__()
+        vgg16 = models.vgg16_bn(pretrained=True)
         self.layer1 = nn.Sequential(
-                        nn.Conv2d(3,64,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(64, momentum=1, affine=True),
-                        nn.ReLU(),
-                        nn.MaxPool2d(2))
-        self.layer2 = nn.Sequential(
-                        nn.Conv2d(64,64,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(64, momentum=1, affine=True),
-                        nn.ReLU(),
-                        nn.MaxPool2d(2))
-        self.layer3 = nn.Sequential(
-                        nn.Conv2d(64,64,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(64, momentum=1, affine=True),
-                        nn.ReLU())
-        self.layer4 = nn.Sequential(
-                        nn.Conv2d(64,64,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(64, momentum=1, affine=True),
-                        nn.ReLU())
+                        nn.Conv2d(4,64,kernel_size=3,padding=1)
+                        )
+        self.vgg = nn.Sequential(*list(vgg16.children())[0][1:])
 
     def forward(self,x):
         out = self.layer1(x)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
+        out = self.vgg(out)
         #out = out.view(out.size(0),-1)
         return out # 64
 
@@ -117,12 +102,13 @@ def weights_init(m):
 
 def get_oneshot_batch():  #shuffle in query_images not done
     classes = list(range(1,21))
-    classes.remove(EXCLUDE_CLASS)
+    # classes.remove(EXCLUDE_CLASS)
     chosen_classes = random.sample(classes, CLASS_NUM)
     support_images = np.zeros((CLASS_NUM,3,224,224), dtype=np.float32)
     support_labels = np.zeros((CLASS_NUM,CLASS_NUM,224,224), dtype=np.float32)
     query_images = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,3,224,224), dtype=np.float32)
     query_labels = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,CLASS_NUM,224,224), dtype=np.float32)
+    zeros = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,1,224,224), dtype=np.float32)
     class_cnt = 0
     for i in chosen_classes:
         imgnames = os.listdir('./fewshot/label/%s' % i)
@@ -148,9 +134,14 @@ def get_oneshot_batch():  #shuffle in query_images not done
             j += 1
 
         class_cnt += 1
+
     support_images_tensor = torch.from_numpy(support_images)
     support_labels_tensor = torch.from_numpy(support_labels)
+    support_images_tensor = torch.cat((support_images_tensor,support_labels_tensor), dim=1)
+
     query_images_tensor = torch.from_numpy(query_images)
+    zeros_tensor = torch.from_numpy(zeros)
+    query_images_tensor = torch.cat((query_images_tensor,zeros_tensor), dim=1)
     query_labels_tensor = torch.from_numpy(query_labels)
     return support_images_tensor, support_labels_tensor, query_images_tensor, query_labels_tensor, chosen_classes
 
@@ -230,8 +221,7 @@ def main():
     print("init neural networks")
 
     #read pre-trained network here
-    vgg16 = models.vgg16_bn(pretrained=True)
-    feature_encoder = nn.Sequential(*list(vgg16.children())[0])
+    feature_encoder = CNNEncoder()
     relation_network = RelationNetwork(FEATURE_DIM,RELATION_DIM)
 
     # feature_encoder.apply(weights_init)
@@ -333,15 +323,15 @@ def main():
             chosen_query = random.sample(list(range(0,BATCH_NUM_PER_CLASS)), DISPLAY_QUERY)
 
             for i in range(CLASS_NUM):
-                supp_img = (np.transpose(samples.numpy()[i],(1,2,0))*255).astype(np.uint8)[:,:,::-1]
+                supp_img = (np.transpose(samples.numpy()[i],(1,2,0))*255).astype(np.uint8)[:,:,:3][:,:,::-1]
                 support_output[0:224,i*224:(i+1)*224,:] = supp_img
-                supp_label = sample_labels.numpy()[i][i]
+                supp_label = (np.transpose(samples.numpy()[i], (1,2,0))*255).astype(np.uint8)[:,:,-1]
                 supp_label[supp_label!=0] = chosen_classes[i]
                 supp_label = decode_segmap(supp_label)
                 support_output[224:224*2, i*224:(i+1)*224,:] = supp_label
 
                 for cnt, x in enumerate(chosen_query):
-                    query_img = (np.transpose(batches.numpy()[x],(1,2,0))*255).astype(np.uint8)[:,:,::-1]
+                    query_img = (np.transpose(batches.numpy()[x],(1,2,0))*255).astype(np.uint8)[:,:,:3][:,:,::-1]
                     query_output[0:224,cnt*224:(cnt+1)*224,:] = query_img
                     query_label = batch_labels.numpy()[x][0] #only apply to one-way setting
                     query_label[query_label!=0] = chosen_classes[i]
@@ -370,7 +360,7 @@ def main():
             cv2.imwrite('result/%s_support.png' % episode, support_output)
 
         #save models
-        if (episode+1) % 100000 == 0:
+        if (episode+1) % 20000 == 0:
             torch.save(feature_encoder.state_dict(),str("./models/feature_encoder_" + str(episode) + '_' + str(CLASS_NUM) +"_way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
             torch.save(relation_network.state_dict(),str("./models/relation_network_"+ str(episode) + '_' + str(CLASS_NUM) +"_way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
             print("save networks for episode:",episode)

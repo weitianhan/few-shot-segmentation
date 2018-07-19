@@ -23,7 +23,7 @@ parser.add_argument("-l","--learning_rate", type = float, default = 0.001)
 parser.add_argument("-g","--gpu",type=int, default=1)
 parser.add_argument("-u","--hidden_unit",type=int,default=10)
 parser.add_argument("-d","--display_query_num",type=int,default=5)
-parser.add_argument("-t","--test_class",type=str,default='vending')
+parser.add_argument("-t","--test_class",type=int,default=1)
 parser.add_argument("-modelf","--feature_encoder_model",type=str,default='models/vgg_20classes_1shot/feature_encoder_479999_1_way_1shot.pkl')
 parser.add_argument("-modelr","--relation_network_model",type=str,default='models/vgg_20classes_1shot/relation_network_479999_1_way_1shot.pkl')
 args = parser.parse_args()
@@ -232,74 +232,79 @@ def main():
     else:
         print('Can not load relation network: %s' % RELATION_MODEL)
         stop
-
-    if not os.path.exists('tmpresult'):
-        os.makedirs('tmpresult')
-
-
     # Step 3: build graph
     print("Testing...")
 
-    imgnames = os.listdir('./fewshot/testimage/%s' % str(TEST_CLASS))
+    imgnames = os.listdir('./fewshot/label/%s' % str(TEST_CLASS))
+    meaniou = 0
     print ('%s testing images in class %s' % (len(imgnames), TEST_CLASS))
-    stick = np.zeros((224*4,224*5,3), dtype=np.uint8)
     for i, imgname in enumerate(imgnames):
         print ('Testing images %s / %s ' % (i, len(imgnames)))
 
-        #support image
-        image = cv2.imread('./fewshot/support/%s_image.jpg' % str(TEST_CLASS)).astype(np.float32)
+        chosen_index = random.sample(list(range(len(imgnames))), 10)
+        # support image
+        image = cv2.imread('./fewshot/image/%s' % imgname.replace('.png', '.jpg')).astype(np.float32)
         demo2 = image.copy()
         image = image[:,:,::-1] # bgr to rgb
         image = image / 255.0
         image = np.transpose(image, (2,0,1))
         image = image[np.newaxis,:]
-
-        label = cv2.imread('./fewshot/support/%s_label.png' % str(TEST_CLASS)).astype(np.float32)
-        demo_label = label.copy() * 255
-        label = label[:,:,0:1]
+        #support label
+        label = cv2.imread('./fewshot/label/%s/%s' % (str(TEST_CLASS), imgname))[:,:,0:1]
         label = np.transpose(label, (2,0,1))
         label = label[np.newaxis,:]
 
         image = np.concatenate((image,label), axis=1)
+        oneimg_iou = 0
 
-        #test image
-        testimg = cv2.imread('./fewshot/testimage/%s/%s' % (str(TEST_CLASS),imgnames[i])).astype(np.float32)
-        demo1 = testimg.copy()
-        testimg = testimg[:,:,::-1] # bgr to rgb
-        testimg = testimg / 255.0
-        testimg = np.transpose(testimg, (2,0,1))
-        testimg = testimg[np.newaxis,:]
-        zeros = np.zeros((1,1,224,224), dtype=np.float32)
-        testimg = np.concatenate((testimg, zeros), axis=1)
+        for j in chosen_index:
+            #test image
+            zeros = np.zeros((1,1,224,224), dtype=np.float32)
+            testimg = cv2.imread('./fewshot/image/%s' % imgnames[j].replace('.png', '.jpg')).astype(np.float32)
+            demo1 = testimg.copy()
+            testimg = testimg[:,:,::-1] # bgr to rgb
+            testimg = testimg / 255.0
+            testimg = np.transpose(testimg, (2,0,1))
+            testimg = testimg[np.newaxis,:]
+            testimg = np.concatenate((testimg, zeros), axis=1)
+            #forward
+            testlabel = cv2.imread('./fewshot/label/%s/%s' % (str(TEST_CLASS), imgnames[j]))[:,:,0]
+            samples = torch.from_numpy(image)
+            batches = torch.from_numpy(testimg)
+            sample_features = feature_encoder(Variable(samples).cuda(GPU))
+            batch_features = feature_encoder(Variable(batches).cuda(GPU))
+            sample_features_ext = sample_features.unsqueeze(0).repeat(BATCH_NUM_PER_CLASS*CLASS_NUM,1,1,1,1)
+            batch_features_ext = batch_features.unsqueeze(0).repeat(SAMPLE_NUM_PER_CLASS*CLASS_NUM,1,1,1,1)
+            batch_features_ext = torch.transpose(batch_features_ext,0,1)
+            relation_pairs = torch.cat((sample_features_ext,batch_features_ext),2).view(-1,1024,7,7)
+            output = relation_network(relation_pairs).view(-1,CLASS_NUM,224,224)
+            #get prediction
+            pred = output.data.cpu().numpy()[0][0]
+            pred[pred<=0.5] = 0
+            pred[pred>0.5] = 1
+            testlabel = testlabel.astype(bool)
+            pred = pred.astype(bool)
+            #compute IOU
+            overlap = testlabel * pred
+            union = testlabel + pred
+            iou = overlap.sum() / float(union.sum())
+            oneimg_iou += iou
 
-        #forward
-        samples = torch.from_numpy(image)
-        batches = torch.from_numpy(testimg)
-        sample_features = feature_encoder(Variable(samples).cuda(GPU))
-        batch_features = feature_encoder(Variable(batches).cuda(GPU))
-        sample_features_ext = sample_features.unsqueeze(0).repeat(BATCH_NUM_PER_CLASS*CLASS_NUM,1,1,1,1)
-        batch_features_ext = batch_features.unsqueeze(0).repeat(SAMPLE_NUM_PER_CLASS*CLASS_NUM,1,1,1,1)
-        batch_features_ext = torch.transpose(batch_features_ext,0,1)
-        relation_pairs = torch.cat((sample_features_ext,batch_features_ext),2).view(-1,1024,7,7)
-        output = relation_network(relation_pairs).view(-1,CLASS_NUM,224,224)
-        #get prediction
-        pred = output.data.cpu().numpy()[0][0]
-        pred_demo = (pred.copy() * 255).astype(np.uint8)
-        pred_demo = cv2.cvtColor(pred_demo, cv2.COLOR_GRAY2RGB)
-        pred[pred<=0.5] = 0
-        pred[pred>0.5] = 1
-        pred = (pred*255).astype(np.uint8)
-        pred = cv2.cvtColor(pred, cv2.COLOR_GRAY2RGB)
+            if i % 50 == 0:
+                stick = np.zeros((224,224*2), dtype=np.uint8)
+                stick[:,0:224] = testlabel.astype(np.uint8)*255
+                stick[:,224:] = pred.astype(np.uint8)*255
+                cv2.imwrite('./tmpresult/%s_iou=%0.4f.png' % (imgname.replace('.png',''), iou), stick)
 
-        #get stick image
-        stick[0:224,0:224,:] = demo2
-        stick[0:224,224:224*2,:] = demo_label
-        stick[224:224*2,i*224:(i+1)*224,:] = demo1
-        stick[224*2:224*3,i*224:(i+1)*224,:] = pred_demo
-        stick[224*3:224*4,i*224:(i+1)*224,:] = pred
+                stick = np.zeros((224,224*2,3), dtype=np.uint8)
+                stick[:,0:224,:] = demo2
+                stick[:,224:,:] = demo1
+                cv2.imwrite('./tmpresult/%s_iou=%0.4f_image.png' % (imgname.replace('.png',''), iou), stick)
+        oneimg_iou = oneimg_iou / float(len(chosen_index))
+        meaniou += oneimg_iou
 
-
-        cv2.imwrite('./tmpresult/%s_test.png' % str(TEST_CLASS), stick)
+    meaniou = meaniou / float(len(imgnames))
+    print ('Final mean IOU is: %0.4f' % meaniou)
 
 if __name__ == '__main__':
     main()

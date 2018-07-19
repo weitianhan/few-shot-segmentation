@@ -47,17 +47,19 @@ class CNNEncoder(nn.Module):
     def __init__(self):
         super(CNNEncoder, self).__init__()
         features = list(models.vgg16_bn(pretrained=True).features)
-        self.features = nn.ModuleList(features)#.eval()
-        # print (self.features)
-        # stop
+        self.layer1 = nn.Sequential(
+                        nn.Conv2d(4,64,kernel_size=3,padding=1)
+                        )
+        self.features = nn.ModuleList(features)[1:]#.eval()
         # print (nn.Sequential(*list(models.vgg16_bn(pretrained=True).children())[0]))
         # self.features = nn.ModuleList(features).eval()
 
     def forward(self,x):
         results = []
+        x = self.layer1(x)
         for ii, model in enumerate(self.features):
             x = model(x)
-            if ii in {5, 12, 22, 32, 42}:
+            if ii in {4, 11, 21, 31, 41}:
                 results.append(x)
 
         return x, results
@@ -166,6 +168,7 @@ def get_oneshot_batch():  #shuffle in query_images not done
     support_labels = np.zeros((CLASS_NUM*SAMPLE_NUM_PER_CLASS,CLASS_NUM,224,224), dtype=np.float32)
     query_images = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,3,224,224), dtype=np.float32)
     query_labels = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,CLASS_NUM,224,224), dtype=np.float32)
+    zeros = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,1,224,224), dtype=np.float32)
     class_cnt = 0
     for i in chosen_classes:
         imgnames = os.listdir('./fewshot/label/%s' % i)
@@ -193,8 +196,13 @@ def get_oneshot_batch():  #shuffle in query_images not done
         class_cnt += 1
     support_images_tensor = torch.from_numpy(support_images)
     support_labels_tensor = torch.from_numpy(support_labels)
+    support_images_tensor = torch.cat((support_images_tensor,support_labels_tensor), dim=1)
+
+    zeros_tensor = torch.from_numpy(zeros)
     query_images_tensor = torch.from_numpy(query_images)
+    query_images_tensor = torch.cat((query_images_tensor,zeros_tensor), dim=1)
     query_labels_tensor = torch.from_numpy(query_labels)
+
     return support_images_tensor, support_labels_tensor, query_images_tensor, query_labels_tensor, chosen_classes
 
 def get_pascal_labels():
@@ -370,14 +378,14 @@ def main():
             os.makedirs('result')
 
         # training result visualization
-        if (episode+1)%5000 == 0:
+        if (episode+1)%1000 == 0:
             support_output = np.zeros((224*2, 224*SAMPLE_NUM_PER_CLASS, 3), dtype=np.uint8)
             query_output = np.zeros((224*3, 224*DISPLAY_QUERY, 3), dtype=np.uint8)
             chosen_query = random.sample(list(range(0,BATCH_NUM_PER_CLASS)), DISPLAY_QUERY)
 
             for i in range(CLASS_NUM):
                 for j in range(SAMPLE_NUM_PER_CLASS):
-                    supp_img = (np.transpose(samples.numpy()[j],(1,2,0))*255).astype(np.uint8)[:,:,::-1]
+                    supp_img = (np.transpose(samples.numpy()[j],(1,2,0))*255).astype(np.uint8)[:,:,:3][:,:,::-1]
                     support_output[0:224,j*224:(j+1)*224,:] = supp_img
                     supp_label = sample_labels.numpy()[j][0]
                     supp_label[supp_label!=0] = chosen_classes[i]
@@ -385,7 +393,7 @@ def main():
                     support_output[224:224*2, j*224:(j+1)*224,:] = supp_label
 
                 for cnt, x in enumerate(chosen_query):
-                    query_img = (np.transpose(batches.numpy()[x],(1,2,0))*255).astype(np.uint8)[:,:,::-1]
+                    query_img = (np.transpose(batches.numpy()[x],(1,2,0))*255).astype(np.uint8)[:,:,:3][:,:,::-1]
                     query_output[0:224,cnt*224:(cnt+1)*224,:] = query_img
                     query_label = batch_labels.numpy()[x][0] #only apply to one-way setting
                     query_label[query_label!=0] = chosen_classes[i]
@@ -414,7 +422,7 @@ def main():
             cv2.imwrite('result/%s_support.png' % episode, support_output)
 
         #save models
-        if (episode+1) % 100000 == 0:
+        if (episode+1) % 20000 == 0:
             torch.save(feature_encoder.state_dict(),str("./models/feature_encoder_" + str(episode) + '_' + str(CLASS_NUM) +"_way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
             torch.save(relation_network.state_dict(),str("./models/relation_network_"+ str(episode) + '_' + str(CLASS_NUM) +"_way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
             print("save networks for episode:",episode)
