@@ -17,13 +17,16 @@ parser.add_argument("-r","--relation_dim",type = int, default = 8)
 parser.add_argument("-w","--class_num",type = int, default = 1)
 parser.add_argument("-s","--sample_num_per_class",type = int, default = 5)
 parser.add_argument("-b","--batch_num_per_class",type = int, default = 9)
-parser.add_argument("-e","--episode",type = int, default= 500000)
+parser.add_argument("-e","--episode",type = int, default= 2000000)
 parser.add_argument("-t","--test_episode", type = int, default = 1000)
-parser.add_argument("-l","--learning_rate", type = float, default = 0.001)
+parser.add_argument("-l","--learning_rate", type = float, default = 0.0005)
 parser.add_argument("-g","--gpu",type=int, default=0)
 parser.add_argument("-u","--hidden_unit",type=int,default=10)
 parser.add_argument("-d","--display_query_num",type=int,default=5)
 parser.add_argument("-ex","--exclude_class",type=int,default=6)
+parser.add_argument("-modelf","--feature_encoder_model",type=str,default='models/feature_encoder_259999_1_way_5shot.pkl')
+parser.add_argument("-modelr","--relation_network_model",type=str,default='models/relation_network_259999_1_way_5shot.pkl')
+
 
 args = parser.parse_args()
 
@@ -41,6 +44,8 @@ GPU = args.gpu
 HIDDEN_UNIT = args.hidden_unit
 DISPLAY_QUERY = args.display_query_num
 EXCLUDE_CLASS = args.exclude_class
+FEATURE_MODEL = args.feature_encoder_model
+RELATION_MODEL = args.relation_network_model
 
 class CNNEncoder(nn.Module):
     """docstring for ClassName"""
@@ -160,8 +165,19 @@ def weights_init(m):
         m.weight.data.normal_(0, 0.01)
         m.bias.data = torch.ones(m.bias.data.size())
 
+
 def get_oneshot_batch():  #shuffle in query_images not done
-    classes = list(range(1,21))
+    classes = list(range(1,90))
+    classes.remove(12)
+    classes.remove(26)
+    classes.remove(29)
+    classes.remove(30)
+    classes.remove(39)
+    classes.remove(45)
+    classes.remove(66)
+    classes.remove(68)
+    classes.remove(69)
+    classes.remove(71)
     # classes.remove(EXCLUDE_CLASS)
     chosen_classes = random.sample(classes, CLASS_NUM)
     support_images = np.zeros((CLASS_NUM*SAMPLE_NUM_PER_CLASS,3,224,224), dtype=np.float32)
@@ -171,20 +187,21 @@ def get_oneshot_batch():  #shuffle in query_images not done
     zeros = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,1,224,224), dtype=np.float32)
     class_cnt = 0
     for i in chosen_classes:
-        imgnames = os.listdir('./fewshot/label/%s' % i)
+        # print ('class %s is chosen' % i)
+        imgnames = os.listdir('./fewshot/COCOlabel/%s' % i)
         indexs = list(range(0,len(imgnames)))
         chosen_index = random.sample(indexs, SAMPLE_NUM_PER_CLASS + BATCH_NUM_PER_CLASS)
         j = 0
         for k in chosen_index:
             # process image
-            image = cv2.imread('./fewshot/image/%s' % imgnames[k].replace('.png', '.jpg'))
+            image = cv2.imread('./fewshot/COCOimage/%s' % imgnames[k].replace('.png', '.jpg'))
             if image is None:
-                print ('./fewshot/image/%s' % imgnames[k].replace('.png', '.jpg'))
+                print ('./fewshot/COCOimage/%s' % imgnames[k].replace('.png', '.jpg'))
             image = image[:,:,::-1] # bgr to rgb
             image = image / 255.0
             image = np.transpose(image, (2,0,1))
             # labels
-            label = cv2.imread('./fewshot/label/%s/%s' % (i, imgnames[k]))[:,:,0]
+            label = cv2.imread('./fewshot/COCOlabel/%s/%s' % (i, imgnames[k]))[:,:,0]
             if j < SAMPLE_NUM_PER_CLASS:
                 support_images[j] = image
                 support_labels[j][0] = label
@@ -290,6 +307,20 @@ def main():
     feature_encoder.cuda(GPU)
     relation_network.cuda(GPU)
 
+    if os.path.exists(FEATURE_MODEL):
+        feature_encoder.load_state_dict(torch.load(FEATURE_MODEL))
+        print("load feature encoder success")
+    else:
+        print('Can not load feature encoder: %s' % FEATURE_MODEL)
+        stop
+    if os.path.exists(RELATION_MODEL):
+        relation_network.load_state_dict(torch.load(RELATION_MODEL))
+        print("load relation network success")
+    else:
+        print('Can not load relation network: %s' % RELATION_MODEL)
+        stop
+
+
     feature_encoder_optim = torch.optim.Adam(feature_encoder.parameters(),lr=LEARNING_RATE)
     feature_encoder_scheduler = StepLR(feature_encoder_optim,step_size=EPISODE//10,gamma=0.5)
     relation_network_optim = torch.optim.Adam(relation_network.parameters(),lr=LEARNING_RATE)
@@ -307,7 +338,7 @@ def main():
 
     last_accuracy = 0.0
 
-    for episode in range(EPISODE):
+    for episode in range(260000, EPISODE):
 
         feature_encoder_scheduler.step(episode)
         relation_network_scheduler.step(episode)
@@ -378,7 +409,7 @@ def main():
             os.makedirs('result')
 
         # training result visualization
-        if (episode+1)%1000 == 0:
+        if (episode+1)%500 == 0:
             support_output = np.zeros((224*2, 224*SAMPLE_NUM_PER_CLASS, 3), dtype=np.uint8)
             query_output = np.zeros((224*3, 224*DISPLAY_QUERY, 3), dtype=np.uint8)
             chosen_query = random.sample(list(range(0,BATCH_NUM_PER_CLASS)), DISPLAY_QUERY)
@@ -422,7 +453,7 @@ def main():
             cv2.imwrite('result/%s_support.png' % episode, support_output)
 
         #save models
-        if (episode+1) % 20000 == 0:
+        if (episode+1) % 10000 == 0:
             torch.save(feature_encoder.state_dict(),str("./models/feature_encoder_" + str(episode) + '_' + str(CLASS_NUM) +"_way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
             torch.save(relation_network.state_dict(),str("./models/relation_network_"+ str(episode) + '_' + str(CLASS_NUM) +"_way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
             print("save networks for episode:",episode)

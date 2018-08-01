@@ -9,10 +9,10 @@ Testing:
 python test_oneshot.py
 
 Logs:
-fix a bug in training codes, now input is 4-channel image (last channel is input label).
-Add testing new classes codes.
+Use COCO dataset in training.
+Finish k-shot eval and test codes.
 
 TODO:
-k-shot eval and test codes.
+Replace Resnet-101 as backbone feature extractor
 
 feature extractor is now VGG16_bn, last feature maps 7*7 and upsample by 2x gradually.

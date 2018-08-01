@@ -75,18 +75,18 @@ def decode_segmap(label_mask, plot=False):
     else:
         return rgb
 
-for i in range(1,21):
-    if not os.path.exists('./fewshot/label/%s' % i):
-        os.makedirs('./fewshot/label/%s' % i)
-imgnames = os.listdir('./data/VOC2012/SegmentationClass')
+for i in range(1,92):
+    if not os.path.exists('./fewshot/COCOlabel/%s' % i):
+        os.makedirs('./fewshot/COCOlabel/%s' % i)
+imgnames = os.listdir('./fewshot/COCOraw')
 cnt = 0
 for name in imgnames:
     cnt += 1
     print ('%s / %s' % (cnt, len(imgnames)))
-    img = cv2.imread('./data/VOC2012/SegmentationClass/%s' % name)
-    img = img[:,:,::-1]
+    img = cv2.imread('./fewshot/COCOraw/%s' % name)
+    img = img[:,:,0]
     img = cv2.resize(img, (224,224), interpolation=cv2.INTER_NEAREST)
-    label = encode_segmap(img)
+    label = img
     clss = np.unique(label)
     clss = np.trim_zeros(clss)
     for c in clss:
@@ -94,10 +94,10 @@ for name in imgnames:
         result[result!=c] = 0
         result[result==c] = 1
         # print (np.unique(result))
-        cv2.imwrite('./fewshot/label/%s/%s' % (c, name), result)
+        cv2.imwrite('./fewshot/COCOlabel/%s/%s' % (c, name), result)
     jpegname = name.replace('.png', '.jpg')
-    rgb = cv2.imread('./data/VOC2012/JPEGImages/%s' % jpegname)
+    rgb = cv2.imread('/media/J/tianhan/data/COCO2017/train2017/%s' % jpegname)
     rgb = cv2.resize(rgb, (224,224))
     if rgb is None:
         print ('wrong here, stop')
-    cv2.imwrite('./fewshot/image/%s' % jpegname, rgb)
+    cv2.imwrite('./fewshot/COCOimage/%s' % jpegname, rgb)
