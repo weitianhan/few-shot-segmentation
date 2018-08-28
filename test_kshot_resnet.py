@@ -20,12 +20,12 @@ parser.add_argument("-b","--batch_num_per_class",type = int, default = 1)
 parser.add_argument("-e","--episode",type = int, default= 50000)
 # parser.add_argument("-t","--test_episode", type = int, default = 1000)
 parser.add_argument("-l","--learning_rate", type = float, default = 0.001)
-parser.add_argument("-g","--gpu",type=int, default=1)
+parser.add_argument("-g","--gpu",type=int, default=0)
 parser.add_argument("-u","--hidden_unit",type=int,default=10)
 parser.add_argument("-d","--display_query_num",type=int,default=5)
 parser.add_argument("-t","--test_class",type=str,default='vending')
-parser.add_argument("-modelf","--feature_encoder_model",type=str,default='models/vgg_coco80class_5shot_fine/feature_encoder_299999_1_way_5shot.pkl')
-parser.add_argument("-modelr","--relation_network_model",type=str,default='models/vgg_coco80class_5shot_fine/relation_network_299999_1_way_5shot.pkl')
+parser.add_argument("-modelf","--feature_encoder_model",type=str,default='models/feature_encoder_279999_1_way_5shot.pkl')
+parser.add_argument("-modelr","--relation_network_model",type=str,default='models/relation_network_279999_1_way_5shot.pkl')
 args = parser.parse_args()
 
 
@@ -49,12 +49,13 @@ class CNNEncoder(nn.Module):
     """docstring for ClassName"""
     def __init__(self):
         super(CNNEncoder, self).__init__()
-        features = list(models.vgg16_bn(pretrained=True).features)
+        # print (nn.Sequential(*list(models.resnet101(pretrained=True).children())[1:-2]))
+        # stop
+        self.features = nn.Sequential(*list(models.resnet101(pretrained=True).children())[1:-2])
         self.layer1 = nn.Sequential(
-                        nn.Conv2d(4,64,kernel_size=3,padding=1)
+                        nn.Conv2d(4,64,kernel_size=7,padding=3,stride=2,bias=False)
                         )
-        self.features = nn.ModuleList(features)[1:]#.eval()
-        # print (nn.Sequential(*list(models.vgg16_bn(pretrained=True).children())[0]))
+        # self.features = nn.ModuleList(features)[1:]#.eval()
         # self.features = nn.ModuleList(features).eval()
 
     def forward(self,x):
@@ -62,7 +63,8 @@ class CNNEncoder(nn.Module):
         x = self.layer1(x)
         for ii, model in enumerate(self.features):
             x = model(x)
-            if ii in {4, 11, 21, 31, 41}:
+            if ii in {1, 3, 4, 5}:
+                # print (x.size())
                 results.append(x)
 
         return x, results
@@ -72,18 +74,18 @@ class RelationNetwork(nn.Module):
     def __init__(self):
         super(RelationNetwork, self).__init__()
         self.layer1 = nn.Sequential(
-                        nn.Conv2d(1024,512,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(512, momentum=1, affine=True),
+                        nn.Conv2d(4096,2048,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(2048, momentum=1, affine=True),
                         nn.ReLU()
                         )
         self.layer2 = nn.Sequential(
-                        nn.Conv2d(512,512,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(512, momentum=1, affine=True),
+                        nn.Conv2d(2048,1024,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(1024, momentum=1, affine=True),
                         nn.ReLU()
                         )
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.double_conv1 = nn.Sequential(
-                        nn.Conv2d(1024,512,kernel_size=3,padding=1),
+                        nn.Conv2d(2048,512,kernel_size=3,padding=1),
                         nn.BatchNorm2d(512, momentum=1, affine=True),
                         nn.ReLU(),
                         nn.Conv2d(512,512,kernel_size=3,padding=1),
@@ -102,12 +104,12 @@ class RelationNetwork(nn.Module):
                         nn.Conv2d(512,128,kernel_size=3,padding=1),
                         nn.BatchNorm2d(128, momentum=1, affine=True),
                         nn.ReLU(),
-                        nn.Conv2d(128,128,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(128, momentum=1, affine=True),
+                        nn.Conv2d(128,64,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(64, momentum=1, affine=True),
                         nn.ReLU()
                         ) # 56 x 56
         self.double_conv4 = nn.Sequential(
-                        nn.Conv2d(256,64,kernel_size=3,padding=1),
+                        nn.Conv2d(128,64,kernel_size=3,padding=1),
                         nn.BatchNorm2d(64, momentum=1, affine=True),
                         nn.ReLU(),
                         nn.Conv2d(64,64,kernel_size=3,padding=1),
@@ -115,7 +117,7 @@ class RelationNetwork(nn.Module):
                         nn.ReLU()
                         ) # 112 x 112
         self.double_conv5 = nn.Sequential(
-                        nn.Conv2d(128,64,kernel_size=3,padding=1),
+                        nn.Conv2d(64,64,kernel_size=3,padding=1),
                         nn.BatchNorm2d(64, momentum=1, affine=True),
                         nn.ReLU(),
                         nn.Conv2d(64,1,kernel_size=1,padding=0),
@@ -142,7 +144,7 @@ class RelationNetwork(nn.Module):
         out = torch.cat((out, concat_features[-4]), dim=1)
         out = self.double_conv4(out)
         out = self.upsample(out) #block 5
-        out = torch.cat((out, concat_features[-5]), dim=1)
+        # out = torch.cat((out, concat_features[-5]), dim=1)
         out = self.double_conv5(out)
 
         out = F.sigmoid(out)
@@ -297,6 +299,7 @@ def main():
     for i, imgname in enumerate(imgnames):
         if i >= 5:
             break
+        # i = 9 - i
         print ('Testing images %s / %s ' % (i, len(imgnames)))
 
         suppnames = os.listdir('./fewshot/support/%s/image' % str(TEST_CLASS))
@@ -338,13 +341,13 @@ def main():
         samples = torch.from_numpy(image)
         batches = torch.from_numpy(testimg)
         sample_features, _ = feature_encoder(Variable(samples).cuda(GPU))
-        sample_features = sample_features.view(CLASS_NUM,SAMPLE_NUM_PER_CLASS,512,7,7)
+        sample_features = sample_features.view(CLASS_NUM,SAMPLE_NUM_PER_CLASS,2048,7,7)
         sample_features = torch.sum(sample_features,1).squeeze(1) # 1*512*7*7
         batch_features, ft_list = feature_encoder(Variable(batches).cuda(GPU))
         sample_features_ext = sample_features.unsqueeze(0).repeat(BATCH_NUM_PER_CLASS*CLASS_NUM,1,1,1,1)
         batch_features_ext = batch_features.unsqueeze(0).repeat(CLASS_NUM,1,1,1,1)
         batch_features_ext = torch.transpose(batch_features_ext,0,1)
-        relation_pairs = torch.cat((sample_features_ext,batch_features_ext),2).view(-1,1024,7,7)
+        relation_pairs = torch.cat((sample_features_ext,batch_features_ext),2).view(-1,4096,7,7)
         output = relation_network(relation_pairs,ft_list).view(-1,CLASS_NUM,224,224)
         #get prediction
         pred = output.data.cpu().numpy()[0][0]
@@ -363,7 +366,7 @@ def main():
 
     stick[0:224,:,:] = supp_demo
     stick[224:224*2,:,:] = supplabel_demo
-    cv2.imwrite('./tmpresult/%s_test_vgg.png' % str(TEST_CLASS), stick)
+    cv2.imwrite('./tmpresult/%s_test_resnet.png' % str(TEST_CLASS), stick)
 
 if __name__ == '__main__':
     main()

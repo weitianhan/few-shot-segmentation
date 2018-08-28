@@ -3,16 +3,15 @@ python oneshot.py
 python kshot.py
 
 Evaluate:
-python eval_oneshot.py
+python eval_kshot.py
 
 Testing:
-python test_oneshot.py
+python test_kshot.py
 
 Logs:
-Use COCO dataset in training.
+Use self dataset in training.
 Finish k-shot eval and test codes.
+Resnet-101 as backbone feature extractor
 
 TODO:
-Replace Resnet-101 as backbone feature extractor
-
-feature extractor is now VGG16_bn, last feature maps 7*7 and upsample by 2x gradually.
+k-shot evaluate codes.

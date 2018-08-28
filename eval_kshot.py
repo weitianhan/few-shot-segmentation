@@ -23,9 +23,9 @@ parser.add_argument("-l","--learning_rate", type = float, default = 0.001)
 parser.add_argument("-g","--gpu",type=int, default=1)
 parser.add_argument("-u","--hidden_unit",type=int,default=10)
 parser.add_argument("-d","--display_query_num",type=int,default=5)
-parser.add_argument("-t","--test_class",type=str,default='vending')
-parser.add_argument("-modelf","--feature_encoder_model",type=str,default='models/vgg_coco80class_5shot_fine/feature_encoder_299999_1_way_5shot.pkl')
-parser.add_argument("-modelr","--relation_network_model",type=str,default='models/vgg_coco80class_5shot_fine/relation_network_299999_1_way_5shot.pkl')
+parser.add_argument("-t","--test_class",type=int,default=1)
+parser.add_argument("-modelf","--feature_encoder_model",type=str,default='models/feature_encoder_259999_1_way_5shot.pkl')
+parser.add_argument("-modelr","--relation_network_model",type=str,default='models/relation_network_259999_1_way_5shot.pkl')
 args = parser.parse_args()
 
 
@@ -148,41 +148,42 @@ class RelationNetwork(nn.Module):
         out = F.sigmoid(out)
         return out
 
-def get_oneshot_batch():  #shuffle in query_images not done
-    classes = list(range(1,21))
-    chosen_classes = random.sample(classes, CLASS_NUM)
-    support_images = np.zeros((CLASS_NUM,3,224,224), dtype=np.float32)
-    support_labels = np.zeros((CLASS_NUM,CLASS_NUM,224,224), dtype=np.float32)
+def get_oneshot_batch(chosen_class):  #shuffle in query_images not done
+    support_images = np.zeros((CLASS_NUM*SAMPLE_NUM_PER_CLASS,3,224,224), dtype=np.float32)
+    support_labels = np.zeros((CLASS_NUM*SAMPLE_NUM_PER_CLASS,CLASS_NUM,224,224), dtype=np.float32)
     query_images = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,3,224,224), dtype=np.float32)
     query_labels = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,CLASS_NUM,224,224), dtype=np.float32)
-    class_cnt = 0
-    for i in chosen_classes:
-        imgnames = os.listdir('./fewshot/label/%s' % i)
-        indexs = list(range(0,len(imgnames)))
-        chosen_index = random.sample(indexs, SAMPLE_NUM_PER_CLASS + BATCH_NUM_PER_CLASS)
-        j = 0
-        for k in chosen_index:
-            # process image
-            image = cv2.imread('./fewshot/image/%s' % imgnames[k].replace('.png', '.jpg'))
-            image = image[:,:,::-1] # bgr to rgb
-            image = image / 255.0
-            image = np.transpose(image, (2,0,1))
-            # labels
-            label = cv2.imread('./fewshot/label/%s/%s' % (i, imgnames[k]))[:,:,0]
-            if j == 0:
-                support_images[class_cnt] = image
-                support_labels[class_cnt][class_cnt] = label
-            else:
-                query_images[class_cnt*BATCH_NUM_PER_CLASS+j-1] = image
-                query_labels[class_cnt*BATCH_NUM_PER_CLASS+j-1][class_cnt] = label
-            j += 1
+    zeros = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,1,224,224), dtype=np.float32)
 
-        class_cnt += 1
+    imgnames = os.listdir('./fewshot/label/%s' % str(TEST_CLASS))
+    indexs = list(range(0,len(imgnames)))
+    chosen_index = random.sample(indexs, SAMPLE_NUM_PER_CLASS + BATCH_NUM_PER_CLASS)
+    j = 0
+    for k in chosen_index:
+        # process image
+        image = cv2.imread('./fewshot/image/%s' % imgnames[k].replace('.png', '.jpg'))
+        image = image[:,:,::-1] # bgr to rgb
+        image = image / 255.0
+        image = np.transpose(image, (2,0,1))
+        # labels
+        label = cv2.imread('./fewshot/label/%s/%s' % (str(TEST_CLASS), imgnames[k]))[:,:,0]
+        if j < SAMPLE_NUM_PER_CLASS:
+            support_images[j] = image
+            support_labels[j][0] = label
+        else:
+            query_images[0] = image
+            query_labels[0][0] = label
+        j += 1
+
     support_images_tensor = torch.from_numpy(support_images)
     support_labels_tensor = torch.from_numpy(support_labels)
+    support_images_tensor = torch.cat((support_images_tensor,support_labels_tensor), dim=1)
+
+    zeros_tensor = torch.from_numpy(zeros)
     query_images_tensor = torch.from_numpy(query_images)
+    query_images_tensor = torch.cat((query_images_tensor,zeros_tensor), dim=1)
     query_labels_tensor = torch.from_numpy(query_labels)
-    return support_images_tensor, support_labels_tensor, query_images_tensor, query_labels_tensor, chosen_classes
+    return support_images_tensor, support_labels_tensor, query_images_tensor, query_labels_tensor
 
 def get_pascal_labels():
     """Load the mapping that associates pascal classes with label colors
@@ -278,65 +279,18 @@ def main():
         print('Can not load relation network: %s' % RELATION_MODEL)
         stop
 
-    if not os.path.exists('tmpresult'):
-        os.makedirs('tmpresult')
-
-
-    # Step 3: build graph
     print("Testing...")
-
-    imgnames = os.listdir('./fewshot/testimage/%s' % str(TEST_CLASS))
-    imgnames.sort()
+    meaniou = 0
+    imgnames = os.listdir('./fewshot/label/%s' % str(TEST_CLASS))
     print ('%s testing images in class %s' % (len(imgnames), TEST_CLASS))
-    stick = np.zeros((224*4,224*5,3), dtype=np.uint8)
-    support_image = np.zeros((SAMPLE_NUM_PER_CLASS, 3, 224, 224), dtype=np.float32)
-    support_label = np.zeros((SAMPLE_NUM_PER_CLASS, 1, 224, 224), dtype=np.float32)
-    supp_demo = np.zeros((224, 224*5,3), dtype=np.uint8)
-    supplabel_demo = np.zeros((224, 224*5,3), dtype=np.uint8)
 
-    for i, imgname in enumerate(imgnames):
-        if i >= 5:
-            break
+    for i in range(len(imgnames)):
         print ('Testing images %s / %s ' % (i, len(imgnames)))
-
-        suppnames = os.listdir('./fewshot/support/%s/image' % str(TEST_CLASS))
-        suppnames.sort()
-        for j, suppname in enumerate(suppnames):
-        #support image
-            if j>= 5:
-                break
-            image = cv2.imread('./fewshot/support/%s/image/%s' % (str(TEST_CLASS), suppnames[j])).astype(np.float32)
-            demo2 = image.copy()
-            supp_demo[:,j*224:(j+1)*224,:] = demo2
-            image = image[:,:,::-1] # bgr to rgb
-            image = image / 255.0
-            image = np.transpose(image, (2,0,1))
-            image = image[np.newaxis,:]
-            support_image[j] = image
-
-            label = cv2.imread('./fewshot/support/%s/label/%s' % (str(TEST_CLASS), suppnames[j][:-4]+'.png')).astype(np.float32)
-            demo_label = label.copy() * 255
-            supplabel_demo[:,j*224:(j+1)*224,:] = demo_label
-            label = label[:,:,0:1]
-            label = np.transpose(label, (2,0,1))
-            label = label[np.newaxis,:]
-            support_label[j] = label
-
-        image = np.concatenate((support_image,support_label), axis=1)
-
-        #test image
-        testimg = cv2.imread('./fewshot/testimage/%s/%s' % (str(TEST_CLASS),imgnames[9-i])).astype(np.float32)
-        demo1 = testimg.copy()
-        testimg = testimg[:,:,::-1] # bgr to rgb
-        testimg = testimg / 255.0
-        testimg = np.transpose(testimg, (2,0,1))
-        testimg = testimg[np.newaxis,:]
-        zeros = np.zeros((1,1,224,224), dtype=np.float32)
-        testimg = np.concatenate((testimg, zeros), axis=1)
-
+        samples, sample_labels, batches, batch_labels = get_oneshot_batch(TEST_CLASS)
+        testimg = np.transpose(batches.numpy()[0], (2,0,1))
+        testlabel = batch_labels.numpy()[0][0]
+        # supportimg = np.transpose(samples.numpy(),(2,0,1))
         #forward
-        samples = torch.from_numpy(image)
-        batches = torch.from_numpy(testimg)
         sample_features, _ = feature_encoder(Variable(samples).cuda(GPU))
         sample_features = sample_features.view(CLASS_NUM,SAMPLE_NUM_PER_CLASS,512,7,7)
         sample_features = torch.sum(sample_features,1).squeeze(1) # 1*512*7*7
@@ -348,22 +302,29 @@ def main():
         output = relation_network(relation_pairs,ft_list).view(-1,CLASS_NUM,224,224)
         #get prediction
         pred = output.data.cpu().numpy()[0][0]
-        pred_demo = (pred.copy() * 255).astype(np.uint8)
-        pred_demo = cv2.cvtColor(pred_demo, cv2.COLOR_GRAY2RGB)
         pred[pred<=0.5] = 0
         pred[pred>0.5] = 1
-        pred = (pred*255).astype(np.uint8)
-        pred = cv2.cvtColor(pred, cv2.COLOR_GRAY2RGB)
+        testlabel = testlabel.astype(bool)
+        pred = pred.astype(bool)
+        #compute IOU
+        overlap = testlabel * pred
+        union = testlabel + pred
+        iou = overlap.sum() / float(union.sum())
+        print ('iou=%0.4f' % iou)
+        meaniou += iou
 
-        #get stick image
-        # stick[0:224,i*224:(i+1)*224,:] = demo2
-        # stick[224:224*2,i*224:(i+1)*224,:] = demo_label
-        stick[224*2:224*3,i*224:(i+1)*224,:] = demo1
-        stick[224*3:224*4,i*224:(i+1)*224,:] = pred
+        if i % 50 == 0:
+            stick = np.zeros((224,224*2), dtype=np.uint8)
+            stick[:,0:224] = testlabel.astype(np.uint8)*255
+            stick[:,224:] = pred.astype(np.uint8)*255
+            cv2.imwrite('./tmpresult/iou=%0.4f.png' % iou, stick)
 
-    stick[0:224,:,:] = supp_demo
-    stick[224:224*2,:,:] = supplabel_demo
-    cv2.imwrite('./tmpresult/%s_test_vgg.png' % str(TEST_CLASS), stick)
+            # stick = np.zeros((224,224*2,3), dtype=np.uint8)
+            # stick[:,0:224,:] = demo2
+            # stick[:,224:,:] = demo1
+            # cv2.imwrite('./tmpresult/%s_iou=%0.4f_image.png' % (imgname.replace('.png',''), iou), stick)
+    meaniou = meaniou / float(len(imgnames))
+    print ('Final mean IOU is: %0.4f' % meaniou)
 
 if __name__ == '__main__':
     main()

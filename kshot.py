@@ -16,16 +16,16 @@ parser.add_argument("-f","--feature_dim",type = int, default = 64)
 parser.add_argument("-r","--relation_dim",type = int, default = 8)
 parser.add_argument("-w","--class_num",type = int, default = 1)
 parser.add_argument("-s","--sample_num_per_class",type = int, default = 5)
-parser.add_argument("-b","--batch_num_per_class",type = int, default = 9)
-parser.add_argument("-e","--episode",type = int, default= 2000000)
+parser.add_argument("-b","--batch_num_per_class",type = int, default = 5)
+parser.add_argument("-e","--episode",type = int, default= 500000)
 parser.add_argument("-t","--test_episode", type = int, default = 1000)
-parser.add_argument("-l","--learning_rate", type = float, default = 0.0005)
+parser.add_argument("-l","--learning_rate", type = float, default = 0.001)
 parser.add_argument("-g","--gpu",type=int, default=0)
 parser.add_argument("-u","--hidden_unit",type=int,default=10)
 parser.add_argument("-d","--display_query_num",type=int,default=5)
 parser.add_argument("-ex","--exclude_class",type=int,default=6)
-parser.add_argument("-modelf","--feature_encoder_model",type=str,default='models/feature_encoder_259999_1_way_5shot.pkl')
-parser.add_argument("-modelr","--relation_network_model",type=str,default='models/relation_network_259999_1_way_5shot.pkl')
+parser.add_argument("-modelf","--feature_encoder_model",type=str,default='models/resnet_coco80class_5shot_fine/feature_encoder_279999_1_way_5shot.pkl')
+parser.add_argument("-modelr","--relation_network_model",type=str,default='models/resnet_coco80class_5shot_fine/relation_network_279999_1_way_5shot.pkl')
 
 
 args = parser.parse_args()
@@ -51,12 +51,13 @@ class CNNEncoder(nn.Module):
     """docstring for ClassName"""
     def __init__(self):
         super(CNNEncoder, self).__init__()
-        features = list(models.vgg16_bn(pretrained=True).features)
+        # print (nn.Sequential(*list(models.resnet101(pretrained=True).children())[1:-2]))
+        # stop
+        self.features = nn.Sequential(*list(models.resnet101(pretrained=True).children())[1:-2])
         self.layer1 = nn.Sequential(
-                        nn.Conv2d(4,64,kernel_size=3,padding=1)
+                        nn.Conv2d(4,64,kernel_size=7,padding=3,stride=2,bias=False)
                         )
-        self.features = nn.ModuleList(features)[1:]#.eval()
-        # print (nn.Sequential(*list(models.vgg16_bn(pretrained=True).children())[0]))
+        # self.features = nn.ModuleList(features)[1:]#.eval()
         # self.features = nn.ModuleList(features).eval()
 
     def forward(self,x):
@@ -64,7 +65,8 @@ class CNNEncoder(nn.Module):
         x = self.layer1(x)
         for ii, model in enumerate(self.features):
             x = model(x)
-            if ii in {4, 11, 21, 31, 41}:
+            if ii in {1, 3, 4, 5}:
+                # print (x.size())
                 results.append(x)
 
         return x, results
@@ -74,18 +76,18 @@ class RelationNetwork(nn.Module):
     def __init__(self):
         super(RelationNetwork, self).__init__()
         self.layer1 = nn.Sequential(
-                        nn.Conv2d(1024,512,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(512, momentum=1, affine=True),
+                        nn.Conv2d(4096,2048,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(2048, momentum=1, affine=True),
                         nn.ReLU()
                         )
         self.layer2 = nn.Sequential(
-                        nn.Conv2d(512,512,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(512, momentum=1, affine=True),
+                        nn.Conv2d(2048,1024,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(1024, momentum=1, affine=True),
                         nn.ReLU()
                         )
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.double_conv1 = nn.Sequential(
-                        nn.Conv2d(1024,512,kernel_size=3,padding=1),
+                        nn.Conv2d(2048,512,kernel_size=3,padding=1),
                         nn.BatchNorm2d(512, momentum=1, affine=True),
                         nn.ReLU(),
                         nn.Conv2d(512,512,kernel_size=3,padding=1),
@@ -104,12 +106,12 @@ class RelationNetwork(nn.Module):
                         nn.Conv2d(512,128,kernel_size=3,padding=1),
                         nn.BatchNorm2d(128, momentum=1, affine=True),
                         nn.ReLU(),
-                        nn.Conv2d(128,128,kernel_size=3,padding=1),
-                        nn.BatchNorm2d(128, momentum=1, affine=True),
+                        nn.Conv2d(128,64,kernel_size=3,padding=1),
+                        nn.BatchNorm2d(64, momentum=1, affine=True),
                         nn.ReLU()
                         ) # 56 x 56
         self.double_conv4 = nn.Sequential(
-                        nn.Conv2d(256,64,kernel_size=3,padding=1),
+                        nn.Conv2d(128,64,kernel_size=3,padding=1),
                         nn.BatchNorm2d(64, momentum=1, affine=True),
                         nn.ReLU(),
                         nn.Conv2d(64,64,kernel_size=3,padding=1),
@@ -117,7 +119,7 @@ class RelationNetwork(nn.Module):
                         nn.ReLU()
                         ) # 112 x 112
         self.double_conv5 = nn.Sequential(
-                        nn.Conv2d(128,64,kernel_size=3,padding=1),
+                        nn.Conv2d(64,64,kernel_size=3,padding=1),
                         nn.BatchNorm2d(64, momentum=1, affine=True),
                         nn.ReLU(),
                         nn.Conv2d(64,1,kernel_size=1,padding=0),
@@ -144,7 +146,7 @@ class RelationNetwork(nn.Module):
         out = torch.cat((out, concat_features[-4]), dim=1)
         out = self.double_conv4(out)
         out = self.upsample(out) #block 5
-        out = torch.cat((out, concat_features[-5]), dim=1)
+        # out = torch.cat((out, concat_features[-5]), dim=1)
         out = self.double_conv5(out)
 
         out = F.sigmoid(out)
@@ -167,18 +169,9 @@ def weights_init(m):
 
 
 def get_oneshot_batch():  #shuffle in query_images not done
-    classes = list(range(1,90))
-    classes.remove(12)
-    classes.remove(26)
-    classes.remove(29)
-    classes.remove(30)
-    classes.remove(39)
-    classes.remove(45)
-    classes.remove(66)
-    classes.remove(68)
-    classes.remove(69)
-    classes.remove(71)
-    # classes.remove(EXCLUDE_CLASS)
+    classes_name = os.listdir('./fewshot/support/')
+    classes = list(range(0,len(classes_name)))
+
     chosen_classes = random.sample(classes, CLASS_NUM)
     support_images = np.zeros((CLASS_NUM*SAMPLE_NUM_PER_CLASS,3,224,224), dtype=np.float32)
     support_labels = np.zeros((CLASS_NUM*SAMPLE_NUM_PER_CLASS,CLASS_NUM,224,224), dtype=np.float32)
@@ -188,20 +181,21 @@ def get_oneshot_batch():  #shuffle in query_images not done
     class_cnt = 0
     for i in chosen_classes:
         # print ('class %s is chosen' % i)
-        imgnames = os.listdir('./fewshot/COCOlabel/%s' % i)
+        imgnames = os.listdir('./fewshot/support/%s/label' % classes_name[i])
         indexs = list(range(0,len(imgnames)))
         chosen_index = random.sample(indexs, SAMPLE_NUM_PER_CLASS + BATCH_NUM_PER_CLASS)
         j = 0
         for k in chosen_index:
             # process image
-            image = cv2.imread('./fewshot/COCOimage/%s' % imgnames[k].replace('.png', '.jpg'))
+            image = cv2.imread('./fewshot/support/%s/image/%s' % (classes_name[i], imgnames[k].replace('.png', '.jpg')))
             if image is None:
-                print ('./fewshot/COCOimage/%s' % imgnames[k].replace('.png', '.jpg'))
+                print ('./fewshot/support/%s/image/%s' % (classes_name[i], imgnames[k].replace('.png', '.jpg')))
+                stop
             image = image[:,:,::-1] # bgr to rgb
             image = image / 255.0
             image = np.transpose(image, (2,0,1))
             # labels
-            label = cv2.imread('./fewshot/COCOlabel/%s/%s' % (i, imgnames[k]))[:,:,0]
+            label = cv2.imread('./fewshot/support/%s/label/%s' % (classes_name[i], imgnames[k]))[:,:,0]
             if j < SAMPLE_NUM_PER_CLASS:
                 support_images[j] = image
                 support_labels[j][0] = label
@@ -307,6 +301,7 @@ def main():
     feature_encoder.cuda(GPU)
     relation_network.cuda(GPU)
 
+    # fine-tuning
     if os.path.exists(FEATURE_MODEL):
         feature_encoder.load_state_dict(torch.load(FEATURE_MODEL))
         print("load feature encoder success")
@@ -338,7 +333,7 @@ def main():
 
     last_accuracy = 0.0
 
-    for episode in range(260000, EPISODE):
+    for episode in range(EPISODE):
 
         feature_encoder_scheduler.step(episode)
         relation_network_scheduler.step(episode)
@@ -362,7 +357,7 @@ def main():
 
         # calculate features
         sample_features, _ = feature_encoder(Variable(samples).cuda(GPU))
-        sample_features = sample_features.view(CLASS_NUM,SAMPLE_NUM_PER_CLASS,512,7,7)
+        sample_features = sample_features.view(CLASS_NUM,SAMPLE_NUM_PER_CLASS,2048,7,7)
         sample_features = torch.sum(sample_features,1).squeeze(1) # 1*512*7*7
         batch_features, ft_list = feature_encoder(Variable(batches).cuda(GPU))
         # print (sample_features.size(), batch_features.size())
@@ -377,7 +372,7 @@ def main():
 
 
 
-        relation_pairs = torch.cat((sample_features_ext,batch_features_ext),2).view(-1,1024,7,7)
+        relation_pairs = torch.cat((sample_features_ext,batch_features_ext),2).view(-1,4096,7,7)
         output = relation_network(relation_pairs,ft_list).view(-1,CLASS_NUM,224,224)
         # print (output.size())
         # stop
@@ -409,7 +404,7 @@ def main():
             os.makedirs('result')
 
         # training result visualization
-        if (episode+1)%500 == 0:
+        if (episode+1)%50 == 0:
             support_output = np.zeros((224*2, 224*SAMPLE_NUM_PER_CLASS, 3), dtype=np.uint8)
             query_output = np.zeros((224*3, 224*DISPLAY_QUERY, 3), dtype=np.uint8)
             chosen_query = random.sample(list(range(0,BATCH_NUM_PER_CLASS)), DISPLAY_QUERY)
