@@ -387,8 +387,6 @@ def main():
 
         mse = nn.MSELoss().cuda(GPU)
         # one_hot_labels = Variable(torch.zeros(BATCH_NUM_PER_CLASS*CLASS_NUM, CLASS_NUM).scatter_(1, batch_labels.view(-1,1), 1)).cuda(GPU)
-        print (output.size(), batch_labels.size())
-        stop
         loss = mse(output,Variable(batch_labels).cuda(GPU))
 
 
