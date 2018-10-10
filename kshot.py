@@ -6,6 +6,7 @@ from torch.optim.lr_scheduler import StepLR
 import torchvision.models as models
 import numpy as np
 import os
+import subprocess
 import math
 import argparse
 import random
@@ -18,6 +19,7 @@ parser.add_argument("-w","--class_num",type = int, default = 1)
 parser.add_argument("-s","--sample_num_per_class",type = int, default = 5)
 parser.add_argument("-b","--batch_num_per_class",type = int, default = 5)
 parser.add_argument("-e","--episode",type = int, default= 500000)
+parser.add_argument("-start","--start_episode",type = int, default= 0)
 parser.add_argument("-t","--test_episode", type = int, default = 1000)
 parser.add_argument("-l","--learning_rate", type = float, default = 0.001)
 parser.add_argument("-g","--gpu",type=int, default=0)
@@ -30,6 +32,11 @@ parser.add_argument("-modelr","--relation_network_model",type=str,default='model
 
 args = parser.parse_args()
 
+os.environ["CUDA_VISIBLE_DEVICES"]=str(np.argmax( [int(x.split()[2]) \
+                                    for x in subprocess.Popen("nvidia-smi -q -d Memory |\
+                                    grep -A4 GPU | grep Free", shell=True, stdout=subprocess.PIPE).stdout.readlines()] ))
+
+# Your codes...........
 
 # Hyper Parameters
 FEATURE_DIM = args.feature_dim
@@ -333,8 +340,7 @@ def main():
 
     last_accuracy = 0.0
 
-    for episode in range(EPISODE):
-
+    for episode in range(args.start_episode, EPISODE):for episode in range(EPISODE):
         feature_encoder_scheduler.step(episode)
         relation_network_scheduler.step(episode)
 
@@ -381,6 +387,8 @@ def main():
 
         mse = nn.MSELoss().cuda(GPU)
         # one_hot_labels = Variable(torch.zeros(BATCH_NUM_PER_CLASS*CLASS_NUM, CLASS_NUM).scatter_(1, batch_labels.view(-1,1), 1)).cuda(GPU)
+        print (output.size(), batch_labels.size())
+        stop
         loss = mse(output,Variable(batch_labels).cuda(GPU))
 
 
@@ -404,7 +412,7 @@ def main():
             os.makedirs('result')
 
         # training result visualization
-        if (episode+1)%50 == 0:
+        if (episode+1)%1000 == 0:
             support_output = np.zeros((224*2, 224*SAMPLE_NUM_PER_CLASS, 3), dtype=np.uint8)
             query_output = np.zeros((224*3, 224*DISPLAY_QUERY, 3), dtype=np.uint8)
             chosen_query = random.sample(list(range(0,BATCH_NUM_PER_CLASS)), DISPLAY_QUERY)

@@ -13,5 +13,4 @@ Use self dataset in training.
 Finish k-shot eval and test codes.
 Resnet-101 as backbone feature extractor
 
-TODO:
-k-shot evaluate codes.
+Final training and evaluating codes. Using MSEloss, resnet-101.

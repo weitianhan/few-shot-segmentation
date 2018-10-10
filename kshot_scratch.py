@@ -18,20 +18,24 @@ parser.add_argument("-r","--relation_dim",type = int, default = 8)
 parser.add_argument("-w","--class_num",type = int, default = 1)
 parser.add_argument("-s","--sample_num_per_class",type = int, default = 5)
 parser.add_argument("-b","--batch_num_per_class",type = int, default = 5)
-parser.add_argument("-e","--episode",type = int, default= 50000)
-# parser.add_argument("-t","--test_episode", type = int, default = 1000)
-parser.add_argument("-l","--learning_rate", type = float, default = 0.001)
+parser.add_argument("-e","--episode",type = int, default= 1000000)
+parser.add_argument("-start","--start_episode",type = int, default= 0)
+parser.add_argument("-t","--test_episode", type = int, default = 1000)
+parser.add_argument("-l","--learning_rate", type = float, default = 0.0005)
 parser.add_argument("-g","--gpu",type=int, default=0)
 parser.add_argument("-u","--hidden_unit",type=int,default=10)
 parser.add_argument("-d","--display_query_num",type=int,default=5)
-parser.add_argument("-t","--test_class",type=int,default=1)
-parser.add_argument("-modelf","--feature_encoder_model",type=str,default='models/feature_encoder_289999_1_way_5shot.pkl')
-parser.add_argument("-modelr","--relation_network_model",type=str,default='models/relation_network_289999_1_way_5shot.pkl')
+parser.add_argument("-ex","--exclude_class",type=int,default=6)
+parser.add_argument("-modelf","--feature_encoder_model",type=str,default='models_scratch/feature_encoder_149999_1_way_5shot.pkl')
+parser.add_argument("-modelr","--relation_network_model",type=str,default='models_scratch/relation_network_149999_1_way_5shot.pkl')
+
+
 args = parser.parse_args()
 
 os.environ["CUDA_VISIBLE_DEVICES"]=str(np.argmax( [int(x.split()[2]) \
                                     for x in subprocess.Popen("nvidia-smi -q -d Memory |\
                                     grep -A4 GPU | grep Free", shell=True, stdout=subprocess.PIPE).stdout.readlines()] ))
+
 
 # Hyper Parameters
 FEATURE_DIM = args.feature_dim
@@ -40,12 +44,12 @@ CLASS_NUM = args.class_num
 SAMPLE_NUM_PER_CLASS = args.sample_num_per_class
 BATCH_NUM_PER_CLASS = args.batch_num_per_class
 EPISODE = args.episode
-# TEST_EPISODE = args.test_episode
+TEST_EPISODE = args.test_episode
 LEARNING_RATE = args.learning_rate
 GPU = args.gpu
 HIDDEN_UNIT = args.hidden_unit
 DISPLAY_QUERY = args.display_query_num
-TEST_CLASS = args.test_class
+EXCLUDE_CLASS = args.exclude_class
 FEATURE_MODEL = args.feature_encoder_model
 RELATION_MODEL = args.relation_network_model
 
@@ -154,10 +158,27 @@ class RelationNetwork(nn.Module):
         out = F.sigmoid(out)
         return out
 
-def get_oneshot_batch(chosen_classes):  #shuffle in query_images not done
-    classes_name = os.listdir('./fewshot/testset/')
+def weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+        m.weight.data.normal_(0, math.sqrt(2. / n))
+        if m.bias is not None:
+            m.bias.data.zero_()
+    elif classname.find('BatchNorm') != -1:
+        m.weight.data.fill_(1)
+        m.bias.data.zero_()
+    elif classname.find('Linear') != -1:
+        n = m.weight.size(1)
+        m.weight.data.normal_(0, 0.01)
+        m.bias.data = torch.ones(m.bias.data.size())
+
+
+def get_oneshot_batch():  #shuffle in query_images not done
+    classes_name = os.listdir('./fewshot/support/')
     classes = list(range(0,len(classes_name)))
 
+    chosen_classes = random.sample(classes, CLASS_NUM)
     support_images = np.zeros((CLASS_NUM*SAMPLE_NUM_PER_CLASS,3,224,224), dtype=np.float32)
     support_labels = np.zeros((CLASS_NUM*SAMPLE_NUM_PER_CLASS,CLASS_NUM,224,224), dtype=np.float32)
     query_images = np.zeros((CLASS_NUM*BATCH_NUM_PER_CLASS,3,224,224), dtype=np.float32)
@@ -166,21 +187,21 @@ def get_oneshot_batch(chosen_classes):  #shuffle in query_images not done
     class_cnt = 0
     for i in chosen_classes:
         # print ('class %s is chosen' % i)
-        imgnames = os.listdir('./fewshot/testset/%s/label' % classes_name[i])
+        imgnames = os.listdir('./fewshot/support/%s/label' % classes_name[i])
         indexs = list(range(0,len(imgnames)))
-        chosen_index = range(0,10)
+        chosen_index = random.sample(indexs, SAMPLE_NUM_PER_CLASS + BATCH_NUM_PER_CLASS)
         j = 0
         for k in chosen_index:
             # process image
-            image = cv2.imread('./fewshot/testset/%s/image/%s' % (classes_name[i], imgnames[k].replace('.png', '.jpg')))
+            image = cv2.imread('./fewshot/support/%s/image/%s' % (classes_name[i], imgnames[k].replace('.png', '.jpg')))
             if image is None:
-                print ('./fewshot/testset/%s/image/%s' % (classes_name[i], imgnames[k].replace('.png', '.jpg')))
+                print ('./fewshot/support/%s/image/%s' % (classes_name[i], imgnames[k].replace('.png', '.jpg')))
                 stop
             image = image[:,:,::-1] # bgr to rgb
             image = image / 255.0
             image = np.transpose(image, (2,0,1))
             # labels
-            label = cv2.imread('./fewshot/testset/%s/label/%s' % (classes_name[i], imgnames[k]))[:,:,0]
+            label = cv2.imread('./fewshot/support/%s/label/%s' % (classes_name[i], imgnames[k]))[:,:,0]
             if j < SAMPLE_NUM_PER_CLASS:
                 support_images[j] = image
                 support_labels[j][0] = label
@@ -276,12 +297,17 @@ def main():
     # Step 2: init neural networks
     print("init neural networks")
 
+    #read pre-trained network here
+    # vgg16 = models.vgg16_bn(pretrained=True)
     feature_encoder = CNNEncoder()
     relation_network = RelationNetwork()
+
+    relation_network.apply(weights_init)
 
     feature_encoder.cuda(GPU)
     relation_network.cuda(GPU)
 
+    # fine-tuning
     if os.path.exists(FEATURE_MODEL):
         feature_encoder.load_state_dict(torch.load(FEATURE_MODEL))
         print("load feature encoder success")
@@ -294,88 +320,195 @@ def main():
     else:
         print('Can not load relation network: %s' % RELATION_MODEL)
         stop
-    if not os.path.exists('tmpresult'):
-        os.makedirs('tmpresult')
 
-    print("Testing...")
-    meaniou = 0
-    classnames = os.listdir('./fewshot/testset')
-    f = open('./tmpresult/iou.txt', 'w')
-    for x, classname in enumerate(classnames):
-        stick = np.zeros((224*4,224*5,3), dtype=np.uint8)
-        support_image = np.zeros((5, 3, 224, 224), dtype=np.float32)
-        support_label = np.zeros((5, 1, 224, 224), dtype=np.float32)
-        supp_demo = np.zeros((224, 224*5,3), dtype=np.uint8)
-        supplabel_demo = np.zeros((224, 224*5,3), dtype=np.uint8)
 
-        imgnames = os.listdir('./fewshot/testset/%s/image' % str(classname))
-        print ('%s testing images in class %s' % (len(imgnames), classname))
+    feature_encoder_optim = torch.optim.Adam(feature_encoder.parameters(),lr=LEARNING_RATE)
+    feature_encoder_scheduler = StepLR(feature_encoder_optim,step_size=EPISODE//10,gamma=0.5)
+    relation_network_optim = torch.optim.Adam(relation_network.parameters(),lr=LEARNING_RATE)
+    relation_network_scheduler = StepLR(relation_network_optim,step_size=EPISODE//10,gamma=0.5)
 
-        # for i in range(len(imgnames)):
-        # print ('Testing images %s / %s ' % (i, len(imgnames)))
-        samples, sample_labels, batches, batch_labels, _ = get_oneshot_batch([x])
+    # if os.path.exists(str("./models/feature_encoder_99999_1_way_1shot.pkl")):
+    #     feature_encoder.load_state_dict(torch.load(str("./models/feature_encoder_99999_1_way_1shot.pkl")))
+    #     print("load feature encoder success")
+    # if os.path.exists(str("./models/relation_network_99999_1_way_1shot.pkl")):
+    #     relation_network.load_state_dict(torch.load(str("./models/relation_network_99999_1_way_1shot.pkl")))
+    #     print("load relation network success")
 
-        # testimg = np.transpose(batches.numpy()[0], (2,0,1))
-        # testlabel = batch_labels.numpy()[0][0]
-        # supportimg = np.transpose(samples.numpy(),(2,0,1))
-        #forward
+    # Step 3: build graph
+    print("Training...")
+
+    last_accuracy = 0.0
+
+    for episode in range(args.start_episode, EPISODE):
+
+        feature_encoder_scheduler.step(episode)
+        relation_network_scheduler.step(episode)
+
+        # init dataset
+        # sample_dataloader is to obtain previous samples for compare
+        # batch_dataloader is to batch samples for training
+        # degrees = random.choice([0,90,180,270])
+        # task = tg.OmniglotTask(metatrain_character_folders,CLASS_NUM,SAMPLE_NUM_PER_CLASS,BATCH_NUM_PER_CLASS)
+        # sample_dataloader = tg.get_data_loader(task,num_per_class=SAMPLE_NUM_PER_CLASS,split="train",shuffle=False,rotation=degrees)
+        # batch_dataloader = tg.get_data_loader(task,num_per_class=BATCH_NUM_PER_CLASS,split="test",shuffle=True,rotation=degrees)
+
+
+        # sample datas
+        # samples,sample_labels = sample_dataloader.__iter__().next()
+        # batches,batch_labels = batch_dataloader.__iter__().next()
+        samples, sample_labels, batches, batch_labels, chosen_classes = get_oneshot_batch()
+        # print (samples.size(), sample_labels.size(), batches.size())
+        # print (type(samples), type(sample_labels))
+        # stop
+
+        # calculate features
         sample_features, _ = feature_encoder(Variable(samples).cuda(GPU))
         sample_features = sample_features.view(CLASS_NUM,SAMPLE_NUM_PER_CLASS,2048,7,7)
         sample_features = torch.sum(sample_features,1).squeeze(1) # 1*512*7*7
         batch_features, ft_list = feature_encoder(Variable(batches).cuda(GPU))
+        # print (sample_features.size(), batch_features.size())
+
+        # calculate relations
+        # each batch sample link to every samples to calculate relations
+        # to form a matrix for relation network
         sample_features_ext = sample_features.unsqueeze(0).repeat(BATCH_NUM_PER_CLASS*CLASS_NUM,1,1,1,1)
         batch_features_ext = batch_features.unsqueeze(0).repeat(CLASS_NUM,1,1,1,1)
         batch_features_ext = torch.transpose(batch_features_ext,0,1)
+        # print (sample_features_ext.size(), batch_features_ext.size())
+
+
+
         relation_pairs = torch.cat((sample_features_ext,batch_features_ext),2).view(-1,4096,7,7)
         output = relation_network(relation_pairs,ft_list).view(-1,CLASS_NUM,224,224)
+        # print (output.size())
+        # stop
+        # print (relation_pairs.size())
+        # stop
 
-        classiou = 0
-        for i in range(0, batches.size()[0]):
-            #get prediction
-            pred = output.data.cpu().numpy()[i][0]
-            pred[pred<=0.5] = 0
-            pred[pred>0.5] = 1
-            #vis
-            demo = cv2.cvtColor(pred, cv2.COLOR_GRAY2RGB) * 255
-            stick[224*3:224*4, 224*i:224*(i+1),:] = demo.copy()
+        mse = nn.MSELoss().cuda(GPU)
+        # one_hot_labels = Variable(torch.zeros(BATCH_NUM_PER_CLASS*CLASS_NUM, CLASS_NUM).scatter_(1, batch_labels.view(-1,1), 1)).cuda(GPU)
+        loss = mse(output,Variable(batch_labels).cuda(GPU))
 
-            testlabel = batch_labels.numpy()[i][0].astype(bool)
-            pred = pred.astype(bool)
-            #compute IOU
-            overlap = testlabel * pred
-            union = testlabel + pred
-            iou = overlap.sum() / float(union.sum())
-            # print ('iou=%0.4f' % iou)
-            classiou += iou
-        classiou /= 5.0
-        print('%s  %.4f' % (classname, classiou))
-        f.write('%s  %.4f\n' % (classname, classiou))
 
-        #visulization
-        for i in range(0, samples.size()[0]):
-            suppimg = np.transpose(samples.numpy()[i][0:3], (1,2,0))[:,:,::-1] * 255
-            supplabel = np.transpose(sample_labels.numpy()[i], (1,2,0))
-            supplabel = cv2.cvtColor(supplabel, cv2.COLOR_GRAY2RGB)
-            supplabel = supplabel * 255
-            testimg = np.transpose(batches.numpy()[i][0:3], (1,2,0))[:,:,::-1] * 255
-            stick[0:224, 224*i:224*(i+1),:] = suppimg.copy()
-            stick[224:224*2, 224*i:224*(i+1),:] = supplabel.copy()
-            stick[224*2:224*3, 224*i:224*(i+1),:] = testimg.copy()
+        # training
 
-        cv2.imwrite('./tmpresult/%s_test_scratch.png' % str(classname), stick)
-        meaniou +=  classiou
-    meaniou /= float(len(classnames))
+        feature_encoder.zero_grad()
+        relation_network.zero_grad()
 
-            # if i % 50 == 0:
-            #     stick = np.zeros((224,224*2), dtype=np.uint8)
-            #     stick[:,0:224] = testlabel.astype(np.uint8)*255
-            #     stick[:,224:] = pred.astype(np.uint8)*255
-            #     cv2.imwrite('./tmpresult/iou=%0.4f.png' % iou, stick)
+        loss.backward()
 
-            # cv2.imwrite('./tmpresult/%s_iou=%0.4f_image.png' % (imgname.replace('.png',''), iou), stick)
-    print ('Final mean IOU is: %0.4f' % meaniou)
-    f.write('Final mean IOU is: %0.4f\n' % meaniou)
-    f.close()
+        torch.nn.utils.clip_grad_norm(feature_encoder.parameters(),0.5)
+        torch.nn.utils.clip_grad_norm(relation_network.parameters(),0.5)
+
+        feature_encoder_optim.step()
+        relation_network_optim.step()
+
+        if (episode+1)%10 == 0:
+                print("episode:",episode+1,"loss",loss.cpu().data.numpy())
+
+        if not os.path.exists('result_scratch'):
+            os.makedirs('result_scratch')
+
+        # training result visualization
+        if (episode+1)%1000 == 0:
+            support_output = np.zeros((224*2, 224*SAMPLE_NUM_PER_CLASS, 3), dtype=np.uint8)
+            query_output = np.zeros((224*3, 224*DISPLAY_QUERY, 3), dtype=np.uint8)
+            chosen_query = random.sample(list(range(0,BATCH_NUM_PER_CLASS)), DISPLAY_QUERY)
+
+            for i in range(CLASS_NUM):
+                for j in range(SAMPLE_NUM_PER_CLASS):
+                    supp_img = (np.transpose(samples.numpy()[j],(1,2,0))*255).astype(np.uint8)[:,:,:3][:,:,::-1]
+                    support_output[0:224,j*224:(j+1)*224,:] = supp_img
+                    supp_label = sample_labels.numpy()[j][0]
+                    supp_label[supp_label!=0] = chosen_classes[i]
+                    supp_label = decode_segmap(supp_label)
+                    support_output[224:224*2, j*224:(j+1)*224,:] = supp_label
+
+                for cnt, x in enumerate(chosen_query):
+                    query_img = (np.transpose(batches.numpy()[x],(1,2,0))*255).astype(np.uint8)[:,:,:3][:,:,::-1]
+                    query_output[0:224,cnt*224:(cnt+1)*224,:] = query_img
+                    query_label = batch_labels.numpy()[x][0] #only apply to one-way setting
+                    query_label[query_label!=0] = chosen_classes[i]
+                    query_label = decode_segmap(query_label)
+                    query_output[224:224*2, cnt*224:(cnt+1)*224,:] = query_label
+
+                    query_pred = output.detach().cpu().numpy()[x][0]
+                    query_pred = (query_pred*255).astype(np.uint8)
+                    result = np.zeros((224,224,3), dtype=np.uint8)
+                    result[:,:,0] = query_pred
+                    result[:,:,1] = query_pred
+                    result[:,:,2] = query_pred
+                    query_output[224*2:224*3, cnt*224:(cnt+1)*224,:] = result
+            extra = query_output.copy()
+            for i in range(CLASS_NUM):
+                for cnt, x in enumerate(chosen_query):
+                    extra_label = batch_labels.numpy()[x][0]
+                    extra_label[extra_label!=0] = 255
+                    result1 = np.zeros((224,224,3), dtype=np.uint8)
+                    result1[:,:,0] = extra_label
+                    result1[:,:,1] = extra_label
+                    result1[:,:,2] = extra_label
+                    extra[224*2:224*3, cnt*224:(cnt+1)*224,:] = result1
+            cv2.imwrite('result_scratch/%s_query.png' % episode, query_output)
+            cv2.imwrite('result_scratch/%s_show.png' % episode, extra)
+            cv2.imwrite('result_scratch/%s_support.png' % episode, support_output)
+
+        #save models
+        if (episode+1) % 10000 == 0:
+            torch.save(feature_encoder.state_dict(),str("./models_scratch/feature_encoder_" + str(episode) + '_' + str(CLASS_NUM) +"_way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
+            torch.save(relation_network.state_dict(),str("./models_scratch/relation_network_"+ str(episode) + '_' + str(CLASS_NUM) +"_way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
+            print("save networks for episode:",episode)
+
+        # if (episode+1)%5000 == 0:
+        #
+        #     # test
+        #     print("Testing...")
+        #     total_rewards = 0
+        #
+        #     for i in range(TEST_EPISODE):
+        #         degrees = random.choice([0,90,180,270])
+        #         # task = tg.OmniglotTask(metatest_character_folders,CLASS_NUM,SAMPLE_NUM_PER_CLASS,SAMPLE_NUM_PER_CLASS,)
+        #         # sample_dataloader = tg.get_data_loader(task,num_per_class=SAMPLE_NUM_PER_CLASS,split="train",shuffle=False,rotation=degrees)
+        #         # test_dataloader = tg.get_data_loader(task,num_per_class=SAMPLE_NUM_PER_CLASS,split="test",shuffle=True,rotation=degrees)
+        #
+        #         sample_images,sample_labels = sample_dataloader.__iter__().next()
+        #         test_images,test_labels = test_dataloader.__iter__().next()
+        #
+        #         # calculate features
+        #         sample_features = feature_encoder(Variable(sample_images).cuda(GPU)) # 5x64
+        #         test_features = feature_encoder(Variable(test_images).cuda(GPU)) # 20x64
+        #
+        #         # calculate relations
+        #         # each batch sample link to every samples to calculate relations
+        #         # to form a 100x128 matrix for relation network
+        #         sample_features_ext = sample_features.unsqueeze(0).repeat(SAMPLE_NUM_PER_CLASS*CLASS_NUM,1,1,1,1)
+        #         test_features_ext = test_features.unsqueeze(0).repeat(SAMPLE_NUM_PER_CLASS*CLASS_NUM,1,1,1,1)
+        #         test_features_ext = torch.transpose(test_features_ext,0,1)
+        #
+        #         relation_pairs = torch.cat((sample_features_ext,test_features_ext),2).view(-1,FEATURE_DIM*2,5,5)
+        #         relations = relation_network(relation_pairs).view(-1,CLASS_NUM)
+        #
+        #
+        #         _,predict_labels = torch.max(relations.data,1)
+        #
+        #         rewards = [1 if predict_labels[j]==test_labels[j] else 0 for j in range(CLASS_NUM)]
+        #
+        #         total_rewards += np.sum(rewards)
+        #
+        #     test_accuracy = total_rewards/1.0/CLASS_NUM/TEST_EPISODE
+        #
+        #     print("test accuracy:",test_accuracy)
+        #
+        #     if test_accuracy > last_accuracy:
+        #
+        #         # save networks
+        #         torch.save(feature_encoder.state_dict(),str("./models/omniglot_feature_encoder_" + str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
+        #         torch.save(relation_network.state_dict(),str("./models/omniglot_relation_network_"+ str(CLASS_NUM) +"way_" + str(SAMPLE_NUM_PER_CLASS) +"shot.pkl"))
+        #
+        #         print("save networks for episode:",episode)
+        #
+        #         last_accuracy = test_accuracy
+
 
 if __name__ == '__main__':
     main()
